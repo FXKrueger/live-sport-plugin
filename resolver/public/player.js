@@ -156,17 +156,17 @@ form.addEventListener('submit', async (event) => {
     })
     const data = await res.json()
     if (!data.ok) throw new Error(`${data.stage || 'error'}: ${data.error || 'resolve failed'}`)
-    if (!data.m3u8 || !data.relay) throw new Error('missing stream URLs in response')
+    if (!data.m3u8) throw new Error('missing stream URL in response')
 
     clock.markResolve()
     const name = data.slug.replace(/-/g, ' ')
     heading.textContent = `${name} · ${data.source} · stream ${data.stream}`
     panel.hidden = false
     rawOut.value = data.m3u8
-    relayOut.value = data.relay
-    vlcOut.value = vlcCmd(data.relay)
-    mpvOut.value = mpvCmd(data.relay, name)
-    await play(data.relay, clock)
+    relayOut.value = data.m3u8
+    vlcOut.value = vlcCmd(data.m3u8)
+    mpvOut.value = mpvCmd(data.m3u8, name)
+    await play(data.m3u8, clock)
   } catch (e) {
     stopTimer()
     timing.hidden = true

@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { request } = require('undici');
 
 const STREAMED_API = 'https://streamed.pk/api';
 const STREAMFREE_API = 'https://streamfree.top/streams';
@@ -77,7 +77,10 @@ async function getAllMatches() {
 
   // 1. Fetch from StreamFree.top (Primary - has logos)
   try {
-    const freeRes = await axios.get(STREAMFREE_API, { timeout: 7000 });
+    const freeRes_req = await request(STREAMFREE_API, { headersTimeout: 7000, bodyTimeout: 7000 });
+    const freeRes = {
+      data: await freeRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     if (freeRes.data && freeRes.data.streams) {
       Object.entries(freeRes.data.streams).forEach(([category, streams]) => {
         if (Array.isArray(streams)) {
@@ -105,7 +108,10 @@ async function getAllMatches() {
 
   // 2. Fetch from Streamed.pk (Secondary/Fallback) and group them
   try {
-    const pkRes = await axios.get(`${STREAMED_API}/matches/all`, { timeout: 7000 });
+    const pkRes_req = await request(`${STREAMED_API}/matches/all`, { headersTimeout: 7000, bodyTimeout: 7000 });
+    const pkRes = {
+      data: await pkRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     if (Array.isArray(pkRes.data)) {
       pkRes.data.forEach(s => {
         const pkEvent = {
@@ -141,7 +147,10 @@ async function getAllMatches() {
 
   // 3. Fetch from BinTV (Third/Fallback) and group them
   try {
-    const bintvRes = await axios.get('https://prabashsapkota.github.io/bintvjson/index.json', { timeout: 7000 });
+    const bintvRes_req = await request('https://prabashsapkota.github.io/bintvjson/index.json', { headersTimeout: 7000, bodyTimeout: 7000 });
+    const bintvRes = {
+      data: await bintvRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     if (Array.isArray(bintvRes.data)) {
       bintvRes.data.forEach((s, index) => {
         const title = s.name || s.title || `BinTV Event ${index}`;
@@ -193,7 +202,10 @@ async function getAllMatches() {
 
   // 4. Fetch from Streamed-Images JSON (Additional BinTV Sources)
   try {
-    const extraRes = await axios.get('https://prabashsapkota.github.io/Streamed-images-json/index.json', { timeout: 7000 });
+    const extraRes_req = await request('https://prabashsapkota.github.io/Streamed-images-json/index.json', { headersTimeout: 7000, bodyTimeout: 7000 });
+    const extraRes = {
+      data: await extraRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     if (extraRes.data && Array.isArray(extraRes.data.matches)) {
       extraRes.data.matches.forEach((s, index) => {
         const title = s.title || `Extra Event ${index}`;
@@ -238,7 +250,10 @@ async function getAllMatches() {
 
   // 5. Fetch from TimStreams (vixnuvew API)
   try {
-    const tsRes = await axios.get('https://timstreams.st/api/live-upcoming', { timeout: 7000 });
+    const tsRes_req = await request('https://timstreams.st/api/live-upcoming', { headersTimeout: 7000, bodyTimeout: 7000 });
+    const tsRes = {
+      data: await tsRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     if (tsRes.data && Array.isArray(tsRes.data.events)) {
       const genres = tsRes.data.genres || {};
       
@@ -254,9 +269,13 @@ async function getAllMatches() {
         if (s.time) {
           const parsed = new Date(s.time).getTime();
           if (!isNaN(parsed)) dateMs = parsed;
-        }
+          }
+          
+          const now = Date.now();
+          const FOUR_HOURS = 4 * 60 * 60 * 1000;
+          const isLive = dateMs <= now && dateMs > now - FOUR_HOURS;
 
-        // Filter out vip-only streams and map to sources
+          // Filter out vip-only streams and map to sources
         const tsSources = (s.streams || [])
           .filter(st => !st.vip)
           .map(st => ({
@@ -272,7 +291,7 @@ async function getAllMatches() {
           title: title,
           category: category,
           date: dateMs.toString(),
-          popular: s.featured ? '1' : '0',
+          popular: (isLive || s.featured) ? '1' : '0',
           sources: tsSources,
           league: '',
           team1: null,
@@ -310,7 +329,10 @@ async function getAllMatches() {
  */
 async function getMatchStreams(matchId) {
   try {
-    const res = await axios.get(`${STREAMED_API}/streams/match/${matchId}`, { timeout: 5000 });
+    const res_req = await request(`${STREAMED_API}/streams/match/${matchId}`, { headersTimeout: 5000, bodyTimeout: 5000 });
+    const res = {
+      data: await res_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
+    };
     return res.data;
   } catch (error) {
     console.error(`[API] Error fetching streams for ${matchId}:`, error.message);

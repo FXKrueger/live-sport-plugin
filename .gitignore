@@ -2,3 +2,8 @@ node_modules/
 .env
 *.log
 .DS_Store
+scratch/
+dist/*.node
+dist_wasm/
+cloudflared.exe
+nuvio-proxy-2/

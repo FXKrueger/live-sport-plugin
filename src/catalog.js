@@ -1,9 +1,81 @@
 const container = require('./container');
+const { getChannelLogo } = require('./services/ChannelLogoService');
+const { prewarmMatch } = require('./streams');
+const { BASE_URL } = require('./config');
+const imageService = require('./services/ImageService');
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Accurately determines if an event is currently live right now.
+ * 24/7 networks are always live.
+ * Fixtures with a kickoff time are live starting 15 minutes before kickoff
+ * up to the sport-specific max game duration.
+ */
+function isMatchLive(match) {
+  if (!match) return false;
+  if (match.category === 'networks' || !match.date) return true;
+
+  // 1. Explicit finished / postponed / cancelled statuses are never live
+  if (match.status === 'finished' || match.status === 'ended' || match.status === 'postponed' || match.status === 'cancelled') {
+    return false;
+  }
+
+  // 2. Explicit live status from provider
+  if (match.status === 'live' || match.status === 'in' || match.status === 'in_progress') {
+    return true;
+  }
+
+  // 3. Explicit upcoming / pre-match status from provider
+  if (match.status === 'upcoming' || match.status === 'pre') {
+    return false;
+  }
+
+  // 4. Time-based evaluation when status is not explicitly set
+  const now = Date.now();
+  const kickoff = match.date ? parseInt(match.date, 10) : 0;
+
+  if (kickoff > 0) {
+    // If kickoff is more than 15 minutes in the future, it's definitely UPCOMING, not live
+    if (kickoff > now + 15 * 60 * 1000) {
+      return false;
+    }
+
+    const durations = {
+      cricket: 8 * 60 * 60 * 1000,
+      mma: 6 * 60 * 60 * 1000,
+      fighting: 6 * 60 * 60 * 1000,
+      boxing: 5 * 60 * 60 * 1000,
+      motorsport: 4 * 60 * 60 * 1000,
+      american_football: 4 * 60 * 60 * 1000,
+      baseball: 3.5 * 60 * 60 * 1000,
+      basketball: 3 * 60 * 60 * 1000,
+      tennis: 4 * 60 * 60 * 1000,
+      golf: 6 * 60 * 60 * 1000,
+      football: 2.5 * 60 * 60 * 1000,
+      rugby: 2.5 * 60 * 60 * 1000,
+      hockey: 3 * 60 * 60 * 1000,
+      darts: 4 * 60 * 60 * 1000
+    };
+    const maxDuration = durations[match.category] || (3 * 60 * 60 * 1000);
+
+    return now >= (kickoff - 15 * 60 * 1000) && now <= (kickoff + maxDuration);
+  }
+
+  return false;
+}
+
+function normalizeImageUrl(url, defaultHost = 'https://streamfree.top') {
+  if (!url || typeof url !== 'string') return null;
+  let u = url.trim();
+  if (!u) return null;
+  if (u.startsWith('//')) return `https:${u}`;
+  if (u.startsWith('http://') || u.startsWith('https://')) return u;
+  if (u.startsWith('/')) return `${defaultHost}${u}`;
+  return `${defaultHost}/${u}`;
+}
 
 function mapMatchToMetaPreview(match, config = {}) {
-  const titleStr = match.title || 'Live Match';
+  const isLive = isMatchLive(match);
+  const titleStr = match.title || (isLive ? 'Live Match' : 'Upcoming Match');
   const safeTitle = encodeURIComponent(Array.from(titleStr).slice(0, 30).join(''));
   
   // Dynamic Sport-Specific Posters
@@ -25,43 +97,7 @@ function mapMatchToMetaPreview(match, config = {}) {
   };
   const color = categoryColors[match.category] || '333333';
   
-  function getChannelLogo(title) {
-    const t = title.toLowerCase();
-    if (t.includes('sky sports cricket')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/8/87/Sky_Sports_Cricket_2020.svg/512px-Sky_Sports_Cricket_2020.svg.png';
-    if (t.includes('sky sports main event')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/1/15/Sky_Sports_Main_Event_2020.svg/512px-Sky_Sports_Main_Event_2020.svg.png';
-    if (t.includes('sky sports premier league')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/d/d4/Sky_Sports_Premier_League_2020.svg/512px-Sky_Sports_Premier_League_2020.svg.png';
-    if (t.includes('sky sports football')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/6/67/Sky_Sports_Football_2020.svg/512px-Sky_Sports_Football_2020.svg.png';
-    if (t.includes('sky sports f1')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/6/60/Sky_Sports_F1_2020.svg/512px-Sky_Sports_F1_2020.svg.png';
-    if (t.includes('sky sports action')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/5/52/Sky_Sports_Action_2020.svg/512px-Sky_Sports_Action_2020.svg.png';
-    if (t.includes('sky sports arena')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/0/00/Sky_Sports_Arena_2020.svg/512px-Sky_Sports_Arena_2020.svg.png';
-    if (t.includes('sky sports golf')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/0/02/Sky_Sports_Golf_2020.svg/512px-Sky_Sports_Golf_2020.svg.png';
-    if (t.includes('sky sports')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/f/f6/Sky_Sports_2020.svg/512px-Sky_Sports_2020.svg.png';
-    if (t.includes('willow')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Willow_TV_logo.svg/512px-Willow_TV_logo.svg.png';
-    if (t.includes('astro cricket')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/0/05/Astro_Cricket_logo.svg/512px-Astro_Cricket_logo.svg.png';
-    if (t.includes('astro supersport')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/1/14/Astro_SuperSport_logo.svg/512px-Astro_SuperSport_logo.svg.png';
-    if (t.includes('tsn')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/3/30/TSN_Logo_2023.svg/512px-TSN_Logo_2023.svg.png';
-    if (t.includes('sportsnet')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Sportsnet_2023_Logo.svg/512px-Sportsnet_2023_Logo.svg.png';
-    if (t.includes('bein sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/BeIN_SPORTS_2017.svg/512px-BeIN_SPORTS_2017.svg.png';
-    if (t.includes('espn')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/ESPN_wordmark.svg/512px-ESPN_wordmark.svg.png';
-    if (t.includes('fox sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/fe/Fox_Sports_logo.svg/512px-Fox_Sports_logo.svg.png';
-    if (t.includes('tnt sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/TNT_Sports_%28United_Kingdom%29_logo.svg/512px-TNT_Sports_%28United_Kingdom%29_logo.svg.png';
-    if (t.includes('bt sport')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/BT_Sport_logo.svg/512px-BT_Sport_logo.svg.png';
-    if (t.includes('eurosport')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/01/Eurosport_logo_2023.svg/512px-Eurosport_logo_2023.svg.png';
-    if (t.includes('star sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Star_Sports_logo.svg/512px-Star_Sports_logo.svg.png';
-    if (t.includes('super sport') || t.includes('supersport')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5f/SuperSport_logo.svg/512px-SuperSport_logo.svg.png';
-    if (t.includes('ten sports')) return 'https://upload.wikimedia.org/wikipedia/en/thumb/7/77/Ten_Sports_Logo.svg/512px-Ten_Sports_Logo.svg.png';
-    if (t.includes('optus')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/Optus_Sport_Logo.svg/512px-Optus_Sport_Logo.svg.png';
-    if (t.includes('nbc sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/NBC_Sports_logo.svg/512px-NBC_Sports_logo.svg.png';
-    if (t.includes('cbs sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/CBS_Sports_2020.svg/512px-CBS_Sports_2020.svg.png';
-    if (t.includes('arena sport')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/09/Arena_Sport_logo.svg/512px-Arena_Sport_logo.svg.png';
-    if (t.includes('digi sport')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/Digisport_Romania_logo.svg/512px-Digisport_Romania_logo.svg.png';
-    if (t.includes('eleven sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Eleven_Sports_logo.svg/512px-Eleven_Sports_logo.svg.png';
-    if (t.includes('bally sports')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/28/Bally_Sports_logo.svg/512px-Bally_Sports_logo.svg.png';
-    if (t.includes('mlb network')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/MLB_Network_logo.svg/512px-MLB_Network_logo.svg.png';
-    if (t.includes('nba tv')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/NBA_TV_logo.svg/512px-NBA_TV_logo.svg.png';
-    if (t.includes('nfl network')) return 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5e/NFL_Network_logo.svg/512px-NFL_Network_logo.svg.png';
-    return null;
-  }
+  // Channel logos come from the unified ChannelLogoService (tv-logos CDN + Wikimedia).
 
   // Generate a clean, readable fallback poster using the match title
   let posterText = match.title;
@@ -75,55 +111,65 @@ function mapMatchToMetaPreview(match, config = {}) {
       posterText = match.category.toUpperCase();
   }
   
-  const fallbackPoster = `https://placehold.co/800x450/111111/${color}.png?text=${encodeURIComponent(posterText)}&font=Montserrat`;
-  
+  // Self-hosted fallback poster (replaces the external placehold.co dependency)
+  const fallbackPoster = imageService.placeholderUrl(BASE_URL, posterText, color);
+
+  // Self-hosted image proxy: serves the upstream image from cache and falls
+  // back to a generated placeholder when the source is dead, so the client
+  // never sees a broken image.
+  const buildImg = (sourceUrl, fbText, c) =>
+    imageService.proxyUrl(BASE_URL, sourceUrl, { text: fbText, color: c });
+
   let poster = fallbackPoster;
-  let logo = match.team1 && match.team1.logo ? match.team1.logo : null;
-
-  // Helper to construct a standardized proxy URL for all images
-  // Uses JPEG with 80% quality to ensure sizes stay well under Stremio's 100kb limit
-  const getProxyUrl = (url, isLogo) => {
-    const fit = isLogo ? 'contain' : 'cover';
-    const bg = isLogo ? '&bg=1a1a1a' : '';
-    return `https://wsrv.nl/?url=${encodeURIComponent(url)}&w=800&h=450&fit=${fit}${bg}&output=jpeg&q=80`;
-  };
-
-  // Enhance channel posters with logos
   const channelLogo = getChannelLogo(match.title);
-  if (channelLogo) {
-    poster = getProxyUrl(channelLogo, true);
+  const team1Logo = match.team1 && match.team1.logo ? normalizeImageUrl(match.team1.logo) : null;
+  const matchPoster = match.poster ? normalizeImageUrl(match.poster) : null;
+  const matchThumb = match.thumbnail_url ? normalizeImageUrl(match.thumbnail_url) : null;
+  const matchLogo = match.logo ? normalizeImageUrl(match.logo) : null;
+
+  let logo = matchLogo || team1Logo || channelLogo || null;
+
+  if (matchPoster) {
+    poster = buildImg(matchPoster, posterText, color) || fallbackPoster;
+  } else if (channelLogo) {
+    poster = buildImg(channelLogo, match.title, '161616') || fallbackPoster;
     logo = channelLogo;
-  } else if (match.thumbnail_url) {
-    const tUrl = match.thumbnail_url.startsWith('http') ? match.thumbnail_url : `https://streamfree.top${match.thumbnail_url}`;
-    // Determine if the URL is likely a logo that needs containment and a background
-    const isLogo = match.category === 'networks' || tUrl.toLowerCase().includes('logo') || tUrl.toLowerCase().includes('icon');
-    
-    poster = getProxyUrl(tUrl, isLogo);
-    
-    if (isLogo) {
-      logo = tUrl;
+  } else if (matchThumb) {
+    const isLogo = match.category === 'networks' || matchThumb.toLowerCase().includes('logo') || matchThumb.toLowerCase().includes('icon');
+    poster = buildImg(matchThumb, posterText, color) || fallbackPoster;
+    if (isLogo && !logo) {
+      logo = matchThumb;
     }
+  } else if (team1Logo) {
+    poster = buildImg(team1Logo, posterText, color) || fallbackPoster;
+    if (!logo) logo = team1Logo;
   }
 
-  let background = poster;
+  if (logo) {
+    logo = buildImg(logo, match.title || 'TV', '161616') || logo;
+  }
+  
+  const matchBackground = match.background ? normalizeImageUrl(match.background) : null;
+  let background = matchBackground ? (buildImg(matchBackground, posterText, color) || poster) : poster;
 
-  let timeString = '24/7 Stream';
+  let timeString = match.category === 'networks' ? '24/7 Stream' : 'Live Now';
   let relativeTimeStr = '';
   let releasedIso = null;
   
   if (match.date && !isNaN(parseInt(match.date)) && parseInt(match.date) > 0) {
      const dateObj = new Date(parseInt(match.date));
      releasedIso = dateObj.toISOString();
-     const options = { hour: '2-digit', minute: '2-digit' };
+     const options = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }; // 24-hour format (00-23), never AM/PM
      
-     // Default to UTC if not specified by client, instead of server local time
-     options.timeZone = (config && config.timezone) ? config.timezone : 'UTC';
+     if (config && config.timezone) {
+       options.timeZone = config.timezone;
+     }
      
-     timeString = dateObj.toLocaleTimeString('en-US', options) + (options.timeZone === 'UTC' ? ' UTC' : '');
+     timeString = dateObj.toLocaleTimeString('en-US', options) + (options.timeZone ? ` (${options.timeZone})` : '');
      
      const now = Date.now();
      const diff = dateObj.getTime() - now;
-     if (diff > 0 && match.popular === '0') {
+     if (diff > 0 && !isLive) {
        const hours = Math.floor(diff / (1000 * 60 * 60));
        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
        if (hours > 24) {
@@ -136,24 +182,40 @@ function mapMatchToMetaPreview(match, config = {}) {
      }
   }
 
-  const prefix = match.popular === '1' ? '🔴 LIVE: ' : '⏱️ ';
+  const is247 = match.category === 'networks' || !match.date;
+  const SPORT_ICONS = {
+    football: '⚽', cricket: '🏏', motorsport: '🏎️', basketball: '🏀', american_football: '🏈',
+    rugby: '🏉', hockey: '🏒', baseball: '⚾', mma: '🥊', golf: '⛳', tennis: '🎾', darts: '🎯',
+    college: '🎓', networks: '📺'
+  };
+  const sportIcon = SPORT_ICONS[match.category] || '🏅';
+  const sportName = match.category === 'networks' ? '24/7 Channel' : match.category.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  // Name: live events get the red dot, 24/7 channels the TV icon, upcoming just the title
+  const prefix = isLive ? (is247 ? '📺 ' : '🔴 ') : '';
   const cast = [];
   if (match.team1 && match.team1.name) cast.push(match.team1.name);
   if (match.team2 && match.team2.name) cast.push(match.team2.name);
 
-  const leagueStr = match.league ? `🏆 League: ${match.league}\n` : '';
-  const desc = `${leagueStr}📅 Category: ${match.category.toUpperCase()}\n⏰ Status: ${timeString === '24/7 Stream' ? '24/7 Live Network' : 'Kickoff at ' + timeString + relativeTimeStr}`;
+  const sourceCount = Array.isArray(match.sources) ? new Set(match.sources.map(s => s.source)).size : 0;
+  const lines = [];
+  lines.push(`${sportIcon} ${sportName}${match.league ? ' · ' + match.league : ''}`);
+  if (is247) lines.push('📺 24/7 live channel');
+  else if (isLive) lines.push('🔴 Live now');
+  else lines.push(`⏰ Kick-off ${timeString}${relativeTimeStr}`);
+  if (sourceCount > 0) lines.push(`📡 ${sourceCount} source${sourceCount === 1 ? '' : 's'}`);
+  const desc = lines.join('\n');
 
   const metaPreview = {
     id: `nuvio_sport_${match.id}`,
     type: 'tv',
     name: `${prefix}${match.title}`,
-    genres: [match.category.toUpperCase()],
+    genres: [sportName],
     poster: poster,
     posterShape: 'landscape',
     background: background,
     logo: logo,
-    releaseInfo: timeString,
+    releaseInfo: isLive ? (is247 ? '24/7' : 'LIVE') : timeString.replace(/\s*\(.*\)$/, ''),
     description: desc,
     cast: cast,
     behaviorHints: {
@@ -174,6 +236,10 @@ async function handleCatalog(type, id, extra, config) {
   if (type !== 'tv' || !id.startsWith('nuvio_sports_')) {
     return { metas: [] };
   }
+
+  // Fire-and-forget stale-while-revalidate: return the cached list now and let
+  // CronService refresh it in the background once it passes the revalidate window.
+  container.resolve('cronService').ensureFresh();
   
   const conf = config || (extra && extra.config) || {};
 
@@ -186,13 +252,10 @@ async function handleCatalog(type, id, extra, config) {
   let filteredMatches = matches;
 
   if (categoryMatch === 'live') {
-    filteredMatches = matches.filter(m => m.popular === '1');
+    filteredMatches = matches.filter(m => isMatchLive(m));
   } else if (categoryMatch === 'upcoming') {
     const now = Date.now();
-    filteredMatches = matches.filter(m => {
-      const kickoff = parseInt(m.date) || 0;
-      return m.popular === '0' && kickoff > now;
-    });
+    filteredMatches = matches.filter(m => !isMatchLive(m) && (parseInt(m.date) || 0) > now);
   } else if (categoryMatch === 'teams') {
     if (typeof conf.teams === 'string' && conf.teams.trim()) {
       const favoriteTeams = conf.teams.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
@@ -207,7 +270,24 @@ async function handleCatalog(type, id, extra, config) {
     const topLevelCats = ['football', 'cricket', 'basketball', 'motorsport', 'hockey', 'baseball', 'mma', 'golf', 'tennis', 'rugby', 'american_football', 'darts', 'networks', 'college'];
     filteredMatches = matches.filter(m => !topLevelCats.includes(m.category));
   } else if (categoryMatch !== 'catalog') {
-    filteredMatches = matches.filter(m => m.category === categoryMatch);
+    filteredMatches = matches.filter(m => {
+      if (m.category === categoryMatch) return true;
+      // Also include 24/7 networks specifically matching the sport category
+      if (m.category === 'networks') {
+        const titleLower = m.title.toLowerCase();
+        if (categoryMatch === 'cricket' && titleLower.includes('cricket')) return true;
+        if (categoryMatch === 'tennis' && titleLower.includes('tennis')) return true;
+        if (categoryMatch === 'motorsport' && (titleLower.includes('f1') || titleLower.includes('racing') || titleLower.includes('moto') || titleLower.includes('motorsport'))) return true;
+        if (categoryMatch === 'basketball' && (titleLower.includes('nba') || titleLower.includes('basketball'))) return true;
+        if (categoryMatch === 'football' && (titleLower.includes('football') || titleLower.includes('soccer') || titleLower.includes('golazo') || titleLower.includes('laliga') || titleLower.includes('premier league') || titleLower.includes('bein sports'))) return true;
+        if (categoryMatch === 'rugby' && (titleLower.includes('rugby') || titleLower.includes('league') || titleLower.includes('nrl'))) return true;
+        if (categoryMatch === 'american_football' && (titleLower.includes('nfl') || titleLower.includes('american football'))) return true;
+        if (categoryMatch === 'baseball' && (titleLower.includes('mlb') || titleLower.includes('baseball'))) return true;
+        if (categoryMatch === 'hockey' && (titleLower.includes('nhl') || titleLower.includes('hockey'))) return true;
+        if (categoryMatch === 'golf' && (titleLower.includes('golf') || titleLower.includes('pga'))) return true;
+      }
+      return false;
+    });
   }
 
   if (typeof conf.sports === 'string' && conf.sports !== 'all') {
@@ -217,14 +297,24 @@ async function handleCatalog(type, id, extra, config) {
   }
 
   filteredMatches = [...filteredMatches].sort((a, b) => {
-    const aIsLive = a.popular === '1' ? 1 : 0;
-    const bIsLive = b.popular === '1' ? 1 : 0;
-    if (aIsLive !== bIsLive) return bIsLive - aIsLive;
+    const aIsLive = isMatchLive(a) ? 1 : 0;
+    const bIsLive = isMatchLive(b) ? 1 : 0;
+    if (aIsLive !== bIsLive) return bIsLive - aIsLive; // Live matches first
+    
+    // Within live matches: Actual live event fixtures (UFC, F1, Football, etc.) take priority over 24/7 TV channels
+    const aIsEvent = a.category !== 'networks' ? 1 : 0;
+    const bIsEvent = b.category !== 'networks' ? 1 : 0;
+    if (aIsEvent !== bIsEvent) return bIsEvent - aIsEvent;
+
+    // Featured / Popular matches first
+    const aPop = a.popular === '1' ? 1 : 0;
+    const bPop = b.popular === '1' ? 1 : 0;
+    if (aPop !== bPop) return bPop - aPop;
     
     const dateA = a.date ? parseInt(a.date) : 0;
     const dateB = b.date ? parseInt(b.date) : 0;
     
-    // Sort upcoming by closest first
+    // Sort upcoming by closest kickoff first
     if (dateA > 0 && dateB > 0) return dateA - dateB;
     return 0;
   });
@@ -240,13 +330,17 @@ async function handleCatalog(type, id, extra, config) {
     );
   }
 
-  return { metas };
+  // Short client cache: live status changes quickly, so let Nuvio re-fetch soon.
+  return { metas, cacheMaxAge: 60, staleRevalidate: 120, staleError: 600 };
 }
 
 async function handleMeta(type, id, config) {
   if (type !== 'tv' || !id.startsWith('nuvio_sport_')) {
     return { meta: null };
   }
+
+  // Fire-and-forget stale-while-revalidate, same as handleCatalog.
+  container.resolve('cronService').ensureFresh();
 
   const matchId = id.replace('nuvio_sport_', '');
   const cacheService = container.resolve('cacheService');
@@ -257,10 +351,15 @@ async function handleMeta(type, id, config) {
     return { meta: null };
   }
 
-  return { meta: mapMatchToMetaPreview(match, config || {}) };
+  // Prewarm: mint tokens for this match's top sources while the user is still
+  // on the detail page, so the eventual click is near-instant. Fire-and-forget.
+  try { prewarmMatch(match, config || {}).catch(() => {}); } catch (_) {}
+
+  return { meta: mapMatchToMetaPreview(match, config || {}), cacheMaxAge: 60, staleRevalidate: 120, staleError: 600 };
 }
 
 module.exports = {
   handleCatalog,
-  handleMeta
+  handleMeta,
+  isMatchLive
 };

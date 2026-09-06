@@ -6,22 +6,25 @@ const CronService = require('./services/CronService');
 const M3U8ParserService = require('./services/M3U8ParserService');
 const MatchAggregator = require('./services/MatchAggregator');
 const StreamScoringService = require('./services/StreamScoringService');
-
 const StreamFreeProvider = require('./providers/StreamFreeProvider');
 const TimStreamsProvider = require('./providers/TimStreamsProvider');
-const BinTvProvider = require('./providers/BinTvProvider');
-const NtvProvider = require('./providers/NtvProvider');
-const IptvOrgProvider = require('./providers/IptvOrgProvider');
+// const IptvOrgProvider = require('./providers/IptvOrgProvider'); // disabled: 24/7 channels removed
 const SportyHunterProvider = require('./providers/SportyHunterProvider');
 
 const WatchFootyProvider = require('./providers/WatchFootyProvider');
 const CdnLiveProvider = require('./providers/CdnLiveProvider');
 const StreamSports99Provider = require('./providers/StreamSports99Provider');
 const StreamicProvider = require('./providers/StreamicProvider');
-const PpvDomainsProvider = require('./providers/PpvDomainsProvider');
-const Strims24Provider = require('./providers/Strims24Provider');
+const EmbedIndiaProvider = require('./providers/EmbedIndiaProvider');
+const EmbedStProvider = require('./providers/EmbedStProvider');
+const StreamedPkProvider = require('./providers/StreamedPkProvider');
+const PpvProvider = require('./providers/PpvProvider');
+const NtvProvider = require('./providers/NtvProvider');
+const SportsindxProvider = require('./providers/SportsindxProvider');
+const EmbedResolver = require('./services/EmbedResolver');
 
 const YamlProviderBuilder = require('./services/YamlProviderBuilder');
+const StreamResolveCache = require('./services/StreamResolveCache');
 
 const container = createContainer({
   injectionMode: InjectionMode.PROXY
@@ -34,7 +37,8 @@ container.register({
   m3u8Parser: asClass(M3U8ParserService).singleton(),
   cronService: asClass(CronService).singleton(),
   matchAggregator: asClass(MatchAggregator).singleton(),
-  streamScorer: asClass(StreamScoringService).singleton()
+  streamScorer: asClass(StreamScoringService).singleton(),
+  streamResolveCache: asValue(new StreamResolveCache())
 });
 
 // Build dynamic YAML Providers
@@ -45,17 +49,20 @@ const yamlProviders = yamlBuilder.buildProviders(container, container.resolve('c
 container.register({
   streamFreeProvider: asClass(StreamFreeProvider).singleton(),
   timStreamsProvider: asClass(TimStreamsProvider).singleton(),
-  binTvProvider: asClass(BinTvProvider).singleton(),
-  ntvProvider: asClass(NtvProvider).singleton(),
-  iptvOrgProvider: asClass(IptvOrgProvider).singleton(),
+  // iptvOrgProvider: asClass(IptvOrgProvider).singleton(), // disabled: 24/7 channels removed
   sportyHunterProvider: asClass(SportyHunterProvider).singleton(),
 
   watchFootyProvider: asClass(WatchFootyProvider).singleton(),
   cdnLiveProvider: asClass(CdnLiveProvider).singleton(),
   streamSports99Provider: asClass(StreamSports99Provider).singleton(),
   streamicProvider: asClass(StreamicProvider).singleton(),
-  ppvDomainsProvider: asClass(PpvDomainsProvider).singleton(),
-  strims24Provider: asClass(Strims24Provider).singleton(),
+  embedIndiaProvider: asClass(EmbedIndiaProvider).singleton(),
+  embedStProvider: asClass(EmbedStProvider).singleton(),
+  streamedPkProvider: asClass(StreamedPkProvider).singleton(),
+  embedResolver: asClass(EmbedResolver).singleton(),
+  ppvProvider: asClass(PpvProvider).singleton(),
+  ntvProvider: asClass(NtvProvider).singleton(),
+  sportsindxProvider: asClass(SportsindxProvider).singleton(),
   yamlProviders: asValue(yamlProviders)
 });
 

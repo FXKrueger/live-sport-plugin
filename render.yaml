@@ -1,23 +1,25 @@
 # Render.com deployment configuration
-# Render reads this file to know how to build and run the service.
 # Docs: https://render.com/docs/render-yaml
+#
+# Node runtime (matches the existing service). `npm run build` bundles src/ into
+# dist/ so the deployed code always matches the repo. A Dockerfile is also
+# provided for Docker-based hosts.
 
 services:
   - type: web
     name: nuvio-live-sports
     runtime: node
-    plan: free          # Free tier — no credit card needed
-    region: oregon      # US West — closest to most CDNs for Streamed.pk
-
-    # Build step: install dependencies
-    buildCommand: npm install
-
-    # Start the server
+    plan: free
+    region: oregon
+    buildCommand: npm install && npm run build
     startCommand: npm start
-
-    # Environment variables
+    healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: 10000     # Render's internal port (Render routes HTTPS → this port)
       - key: NODE_ENV
         value: production
+      # Full provider re-sync schedule with zero traffic (cron syntax)
+      - key: CATALOG_SYNC_CRON
+        value: "*/10 * * * *"
+      # Traffic-driven stale-while-revalidate window (ms)
+      - key: CATALOG_REVALIDATE_MS
+        value: 180000

@@ -162,6 +162,152 @@ export default {
     }
     // -----------------------------------
 
+    // --- EDGE SCRAPER FOR EMBED DOMAINS (embedindia.st, embed.st, ppv.st etc.) ---
+    // Fetches the embed page at the edge and runs all known extraction patterns
+    // (ported from EmbedExtractorChain.js) so the scraper IP = the player IP.
+    if (action === 'embed') {
+      try {
+        const embedUrl = reqUrl.searchParams.get('embedUrl');
+        if (!embedUrl) return new Response('Embed Error: missing embedUrl param', { status: 400, headers: { 'Access-Control-Allow-Origin': '*' } });
+
+        const embedReferer = reqUrl.searchParams.get('referer') || (new URL(embedUrl).origin + '/');
+        const embedOrigin  = new URL(embedUrl).origin;
+
+        const embedHeaders = new Headers();
+        embedHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36');
+        embedHeaders.set('Referer',    embedReferer);
+        embedHeaders.set('Accept',     'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8');
+
+        const embedRes = await fetch(embedUrl, { headers: embedHeaders });
+        if (!embedRes.ok) return new Response(`Embed Error: HTTP ${embedRes.status} from embed page`, { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } });
+        const html = await embedRes.text();
+
+        // ── Helper: CF Worker uses atob() natively (no Buffer) ──────────────
+        function b64decode(s) {
+          let b = s.replace(/-/g, '+').replace(/_/g, '/');
+          while (b.length % 4) b += '=';
+          return atob(b);
+        }
+
+        let m3u8Url = null;
+
+        // Pattern A — plain-text .m3u8 URL anywhere in source
+        if (!m3u8Url) {
+          const mA = html.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+          if (mA && mA[1] && mA[1].length > 20 && mA[1].length < 2000) m3u8Url = mA[1];
+        }
+
+        // Pattern D — JSON player-config keys (file, source, src, url, hls, stream)
+        if (!m3u8Url) {
+          const jsonKeys = ['source','file','src','url','hls','stream','streamUrl','hlsUrl'];
+          for (const key of jsonKeys) {
+            const re = new RegExp(`["']${key}["']\\s*:\\s*["'](https?:\\/\\/[^"']+\\.m3u8[^"']*)["']`, 'i');
+            const mD = html.match(re);
+            if (mD && mD[1]) { m3u8Url = mD[1]; break; }
+          }
+        }
+
+        // Pattern E — decoder function + concatenated base64 chunks (SS99 / CDNLive style)
+        if (!m3u8Url) {
+          const decoderMatch = html.match(/function\s+([a-zA-Z0-9_]+)\s*\([a-zA-Z0-9_]+\)\s*\{[\s\S]{0,200}?atob/);
+          if (decoderMatch) {
+            const decoderName = decoderMatch[1];
+            const callRegex = new RegExp(`${decoderName}\\s*\\(\\s*["']([A-Za-z0-9+/=_-]+)["']\\s*\\)`, 'g');
+            let parts = [];
+            let cm;
+            while ((cm = callRegex.exec(html)) !== null) {
+              try { parts.push(b64decode(cm[1])); } catch(_) {}
+            }
+            if (parts.length > 0) {
+              const assembled = parts.join('');
+              if (assembled.includes('.m3u8')) {
+                const mE = assembled.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+                if (mE) m3u8Url = mE[1];
+              }
+            }
+          }
+        }
+
+        // Pattern B — atob("literal") inline + var-map atob(varName) forms
+        if (!m3u8Url) {
+          const atobLit = /atob\s*\(\s*["']([A-Za-z0-9+/=_-]+)["']\s*\)/g;
+          let mB;
+          while ((mB = atobLit.exec(html)) !== null && !m3u8Url) {
+            try {
+              const decoded = b64decode(mB[1]);
+              if (decoded.includes('.m3u8')) {
+                const u = decoded.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+                if (u) m3u8Url = u[1];
+              }
+            } catch(_) {}
+          }
+          // Var-map form: var x = "b64"; ... atob(x)
+          if (!m3u8Url) {
+            const varMap = {};
+            const varDecl = /var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*["']([A-Za-z0-9+/=_-]{20,})["']/g;
+            let vd;
+            while ((vd = varDecl.exec(html)) !== null) varMap[vd[1]] = vd[2];
+            const varRef = /atob\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)/g;
+            let vr;
+            while ((vr = varRef.exec(html)) !== null && !m3u8Url) {
+              const val = varMap[vr[1]];
+              if (val) {
+                try {
+                  const decoded = b64decode(val);
+                  if (decoded.includes('.m3u8')) {
+                    const u = decoded.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+                    if (u) m3u8Url = u[1];
+                  }
+                } catch(_) {}
+              }
+            }
+          }
+        }
+
+        // Pattern C — XOR numeric array (TimStreams style)
+        if (!m3u8Url) {
+          const arrMatch = html.match(/var\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*\[(\d+(?:,\s*\d+)+)\]/);
+          if (arrMatch) {
+            const nums = arrMatch[1].split(',').map(n => parseInt(n.trim(), 10));
+            if (nums.length >= 10) {
+              const keyNums = [];
+              const keyRe = /var\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*=\s*(\d+)/g;
+              let km;
+              while ((km = keyRe.exec(html)) !== null) {
+                keyNums.push(parseInt(km[1], 10));
+                if (keyNums.length >= 3) break;
+              }
+              for (let ki = 0; ki < keyNums.length - 1 && !m3u8Url; ki++) {
+                try {
+                  const decoded = nums.map(n => String.fromCharCode(((n ^ keyNums[ki]) - keyNums[ki + 1] + 256) % 256)).join('');
+                  if (decoded.includes('.m3u8')) {
+                    const u = decoded.match(/(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+                    if (u) m3u8Url = u[1];
+                  }
+                } catch(_) {}
+              }
+            }
+          }
+        }
+
+        if (!m3u8Url) {
+          return new Response(JSON.stringify({ error: 'Embed Edge: no m3u8 found in page', embedUrl }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+
+        // Extracted! Set url + correct headers, fall through to normal proxy logic
+        reqUrl.searchParams.set('url', m3u8Url);
+        newHeaders.set('Referer', embedReferer);
+        newHeaders.set('Origin',  embedOrigin);
+
+      } catch (err) {
+        return new Response(`Embed Edge Scrape Error: ${err.message}`, { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+    }
+    // -----------------------------------
+
     const targetUrl = reqUrl.searchParams.get('url');
     if (!targetUrl) {
       return new Response("Nuvio Cloudflare Proxy is running!", { 

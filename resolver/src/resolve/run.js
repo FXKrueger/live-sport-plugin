@@ -1,4 +1,3 @@
-import { relayLink } from '../relay/link.js'
 import { loadWatch } from '../streamed/watch.js'
 import { parseInput } from './parse.js'
 import { resolveSource } from '../sources/registry.js'
@@ -35,7 +34,6 @@ export async function run(input, origin) {
       watchUrl: meta?.watchUrl,
       embedUrl: meta?.embedUrl,
       m3u8,
-      relay: relayLink(origin, m3u8, slot),
     }
   } catch (err) {
     return { ok: false, stage: 'resolve', error: String(err.message || err) }

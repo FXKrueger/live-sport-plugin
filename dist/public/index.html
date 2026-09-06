@@ -4,279 +4,269 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Nuvio Live Sports</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700;900&display=swap" rel="stylesheet">
+  <link rel="icon" href="/logo.png">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@700;900&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --bg: #09090b;
-      --card-bg: rgba(28, 28, 30, 0.4);
-      --card-border: rgba(255, 255, 255, 0.05);
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --accent: #ef4444;
-      --accent-glow: rgba(239, 68, 68, 0.3);
-      --glass: rgba(15, 15, 17, 0.7);
-    }
+    :root { --bg: #09090b; --panel: #121215; --panel-2: #18181c; --border: rgba(255,255,255,0.08); --text: #f4f4f5; --muted: #9ca3af; --accent: #ef4444; --ok: #22c55e; --warn: #f59e0b; }
     * { box-sizing: border-box; }
-    body { font-family: 'Inter', sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; }
-    header { position: sticky; top: 0; z-index: 50; background: var(--glass); backdrop-filter: blur(16px); padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); }
-    .brand { font-family: 'Outfit', sans-serif; font-size: 1.8rem; font-weight: 900; background: linear-gradient(to right, #fff, #94a3b8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    main { padding: 40px; max-width: 1600px; margin: 0 auto; }
-    
-    .tabs { display: flex; gap: 15px; margin-bottom: 30px; overflow-x: auto; padding-bottom: 10px; }
-    .tab { padding: 10px 20px; border-radius: 30px; background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); color: var(--text-muted); cursor: pointer; font-weight: 600; transition: all 0.2s; white-space: nowrap; }
-    .tab:hover { background: rgba(255,255,255,0.1); color: white; }
-    .tab.active { background: var(--accent); color: white; border-color: var(--accent); box-shadow: 0 4px 15px var(--accent-glow); }
-    
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 30px; }
-    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; overflow: hidden; cursor: pointer; transition: all 0.4s; position: relative; }
-    .card:hover { transform: translateY(-8px) scale(1.02); border-color: rgba(255, 255, 255, 0.15); box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
-    .poster-container { position: relative; width: 100%; aspect-ratio: 16/9; background: #111; overflow: hidden; }
-    .background { width: 100%; height: 100%; object-fit: cover; filter: blur(20px) brightness(0.6); transform: scale(1.2); }
-    .poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 1; padding: 10px; }
-    .logo { position: absolute; top: 15px; left: 15px; width: 48px; height: 48px; z-index: 3; border-radius: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); object-fit: contain; padding: 6px; border: 1px solid rgba(255,255,255,0.1); }
-    .live-badge { position: absolute; top: 15px; right: 15px; z-index: 3; background: var(--accent); color: white; font-size: 0.75rem; font-weight: 800; padding: 4px 10px; border-radius: 20px; }
-    .info { position: absolute; bottom: 0; left: 0; right: 0; padding: 20px; z-index: 3; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); }
-    .title { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.25rem; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
-    .desc { font-size: 0.85rem; color: var(--text-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; }
-    
-    #player-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.95); backdrop-filter: blur(20px); z-index: 100; flex-direction: column; }
-    #close-btn { position: absolute; top: 30px; right: 40px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; padding: 12px 24px; border-radius: 30px; cursor: pointer; z-index: 101; font-weight: 600; }
-    #video-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: relative; }
-    video { width: 100%; max-width: 1400px; max-height: 85vh; border-radius: 16px; background: #000; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
-    
-    #source-selector { display: none; position: absolute; z-index: 102; background: rgba(20,20,20,0.9); padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); flex-direction: column; gap: 10px; }
-    .source-btn { background: rgba(255,255,255,0.1); color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: background 0.2s; }
-    .source-btn:hover { background: var(--accent); }
-    
-    .loader { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 15px; }
-    .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; }
+    a { color: inherit; text-decoration: none; }
+    header { position: sticky; top: 0; z-index: 50; background: rgba(9,9,11,0.85); backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); }
+    .bar { max-width: 1500px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: 'Outfit', sans-serif; font-weight: 900; font-size: 20px; }
+    .brand img { width: 34px; height: 34px; border-radius: 9px; }
+    .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+    .dot.bad { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+    .spacer { flex: 1; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.05); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .btn:hover { background: rgba(255,255,255,0.1); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); }
+    .btn:disabled { opacity: .5; cursor: default; }
+    main { max-width: 1500px; margin: 0 auto; padding: 22px 24px 60px; }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+    .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; flex: 1; scrollbar-width: thin; }
+    .tab { padding: 8px 14px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-weight: 600; font-size: 13px; white-space: nowrap; }
+    .tab:hover { color: #fff; }
+    .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .tab .n { opacity: .7; font-weight: 500; margin-left: 4px; }
+    input.search { padding: 9px 14px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: #fff; outline: none; min-width: 220px; font-family: inherit; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; cursor: pointer; transition: transform .2s, border-color .2s; display: flex; flex-direction: column; }
+    .card:hover { transform: translateY(-3px); border-color: rgba(239,68,68,0.6); }
+    .poster { position: relative; aspect-ratio: 16/9; background: #0c0c0f; overflow: hidden; }
+    .poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .poster .logo { position: absolute; left: 10px; top: 10px; width: 40px; height: 40px; border-radius: 10px; background: rgba(0,0,0,0.6); object-fit: contain; padding: 5px; }
+    .tag { position: absolute; right: 10px; top: 10px; font-size: 11px; font-weight: 800; padding: 4px 9px; border-radius: 999px; background: rgba(0,0,0,0.7); }
+    .tag.live { background: var(--accent); animation: pulse 2s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); } 70% { box-shadow: 0 0 0 8px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+    .info { padding: 12px 14px 14px; }
+    .title { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 15px; line-height: 1.3; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .meta { font-size: 12px; color: var(--muted); line-height: 1.5; white-space: pre-line; }
+    .empty { grid-column: 1/-1; color: var(--muted); padding: 40px; text-align: center; }
+
+    /* Player overlay */
+    #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92); backdrop-filter: blur(12px); z-index: 100; }
+    #overlay.open { display: flex; flex-direction: column; }
+    .ov-bar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+    .ov-bar .t { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 16px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ov-body { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+    @media (max-width: 860px) { .ov-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } }
+    .ov-video { display: flex; align-items: center; justify-content: center; background: #000; position: relative; min-height: 220px; }
+    video { width: 100%; height: 100%; max-height: 100%; background: #000; }
+    .ov-list { border-left: 1px solid var(--border); overflow: auto; padding: 12px; }
+    .ov-list h4 { margin: 4px 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .stream { padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid transparent; margin-bottom: 8px; cursor: pointer; font-size: 13px; white-space: pre-line; line-height: 1.45; }
+    .stream:hover { border-color: rgba(255,255,255,0.15); }
+    .stream.active { border-color: var(--accent); background: rgba(239,68,68,0.1); }
+    .stream .k { display: inline-block; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 5px; margin-bottom: 4px; }
+    .stream .k.direct { background: rgba(34,197,94,0.15); color: var(--ok); }
+    .stream .k.web { background: rgba(156,163,175,0.15); color: var(--muted); }
+    .loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 13px; }
+    .spinner { width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.1); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1f1f23; border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; font-size: 13px; z-index: 200; opacity: 0; transition: opacity .2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
 </head>
 <body>
-
-  <header>
-    <div class="brand">Nuvio Live Sports</div>
-    <a href="/configure" style="background: var(--accent); color: white; padding: 10px 20px; border-radius: 30px; text-decoration: none; font-weight: 700; font-family: 'Outfit', sans-serif; transition: all 0.2s; box-shadow: 0 4px 15px var(--accent-glow);">Configure Plugin</a>
-  </header>
-
-  <main>
-    <div style="display: flex; gap: 15px; margin-bottom: 30px; align-items: center; flex-wrap: wrap;">
-      <div class="tabs" id="tabs" style="flex: 1; margin-bottom: 0;">
-        <div style="color:var(--text-muted);">Loading catalogs...</div>
-      </div>
-      <input type="text" id="searchInput" placeholder="Search matches..." style="padding: 10px 20px; border-radius: 30px; background: rgba(255,255,255,0.05); border: 1px solid var(--card-border); color: white; outline: none; min-width: 200px; font-family: 'Inter', sans-serif;">
-    </div>
-    <div class="grid" id="grid"></div>
-  </main>
-
-  <div id="player-overlay">
-    <button id="close-btn" onclick="closePlayer()">Close Player</button>
-    
-    <div id="source-selector">
-      <h3 style="margin-top:0; color:white; font-family:'Outfit',sans-serif;">Select Stream Source</h3>
-      <div id="source-buttons" style="display:flex; flex-direction:column; gap:10px;"></div>
-    </div>
-
-    <div id="video-container">
-      <div class="loader" id="loader">
-        <div class="spinner"></div>
-        <div>Loading stream...</div>
-      </div>
-      <video id="video" controls autoplay></video>
-    </div>
+<header>
+  <div class="bar">
+    <a class="brand" href="/"><img src="/logo.png" alt=""> Nuvio Live Sports</a>
+    <div class="status" id="status"><span class="dot warn"></span><span>Loading status…</span></div>
+    <div class="spacer"></div>
+    <button class="btn" id="refreshBtn" title="Re-sync all providers now">⟳ Refresh</button>
+    <a class="btn primary" href="/configure">⚙ Configure & Install</a>
   </div>
+</header>
 
-  <script>
-    let hls = null;
-    let currentMatches = [];
+<main>
+  <div class="controls">
+    <div class="tabs" id="tabs"><span class="tab">Loading…</span></div>
+    <input class="search" id="search" type="search" placeholder="Search teams, leagues…">
+  </div>
+  <div class="grid" id="grid"></div>
+</main>
 
-    async function loadTabs() {
-      try {
-        const res = await fetch('/manifest.json');
-        const manifest = await res.json();
-        const tabsContainer = document.getElementById('tabs');
-        tabsContainer.innerHTML = '';
-        
-        let firstCatalog = null;
-        let firstTab = null;
+<div id="overlay">
+  <div class="ov-bar">
+    <div class="t" id="ovTitle">Player</div>
+    <button class="btn" id="closeBtn">✕ Close</button>
+  </div>
+  <div class="ov-body">
+    <div class="ov-video">
+      <div class="loader" id="loader"><div class="spinner"></div><div id="loaderText">Resolving streams…</div></div>
+      <video id="video" controls playsinline></video>
+    </div>
+    <div class="ov-list"><h4>Streams</h4><div id="streamList"></div></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
 
-        manifest.catalogs.forEach((catalog) => {
-          // Skip non-TV catalogs or internal ones
-          if (catalog.type !== 'tv' || catalog.id === 'nuvio_sports_teams') return;
-          
-          if (!firstCatalog) firstCatalog = catalog.id;
-          
-          const tab = document.createElement('div');
-          tab.className = 'tab';
-          tab.innerText = catalog.name.replace('nuvio ', '').replace('Nuvio ', '');
-          tab.onclick = () => loadCatalog(catalog.id, tab);
-          tabsContainer.appendChild(tab);
-          
-          if (!firstTab) firstTab = tab;
-        });
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  let hls = null, current = [], activeCatalog = null;
 
-        if (firstCatalog && firstTab) {
-          loadCatalog(firstCatalog, firstTab);
-        }
-      } catch (err) {
-        console.error('Failed to load manifest', err);
-        document.getElementById('tabs').innerHTML = '<div style="color:var(--accent);">Failed to load catalogs. Ensure server is running.</div>';
-      }
+  const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); };
+  const ago = (ms) => ms == null ? 'never' : ms < 60000 ? `${Math.round(ms / 1000)}s ago` : ms < 3600000 ? `${Math.round(ms / 60000)} min ago` : `${Math.round(ms / 3600000)} h ago`;
+
+  // ── Status bar ─────────────────────────────────────────────────────────────
+  async function loadStatus() {
+    try {
+      const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+      const okProviders = s.sync && s.sync.report ? s.sync.report.providers.filter(p => p.ok).length : 0;
+      const total = s.sync && s.sync.report ? s.sync.report.providers.length : 0;
+      const cls = s.sync && s.sync.syncing ? 'warn' : (okProviders > 0 ? '' : 'bad');
+      $('#status').innerHTML = `<span class="dot ${cls}"></span><span>${s.live} live · ${s.matches} events · ${okProviders}/${total} sources · synced ${ago(s.sync ? s.sync.ageMs : null)}${s.sync && s.sync.syncing ? ' · syncing…' : ''}</span>`;
+      $('#status').title = s.sync && s.sync.report ? s.sync.report.providers.map(p => `${p.ok ? '✓' : '✗'} ${p.name}: ${p.count} (${p.ms} ms)`).join('\n') : '';
+    } catch (_) {
+      $('#status').innerHTML = '<span class="dot bad"></span><span>Server unreachable</span>';
     }
+  }
 
-    async function loadCatalog(catalogId, tabElement) {
-      if (tabElement) {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        tabElement.classList.add('active');
-      }
+  $('#refreshBtn').addEventListener('click', async () => {
+    const b = $('#refreshBtn'); b.disabled = true; b.textContent = '⟳ Refreshing…';
+    try {
+      const r = await (await fetch('/api/refresh', { method: 'POST' })).json();
+      if (r.started) toast(`Refreshed · ${r.matches} events`);
+      else if (r.reason === 'rate-limited') toast(`Please wait ${Math.ceil((r.waitMs || 0) / 1000)}s before refreshing again`);
+      else toast('A refresh is already running');
+      await loadStatus();
+      if (activeCatalog) await loadCatalog(activeCatalog.id, activeCatalog.el, true);
+    } catch (e) { toast('Refresh failed'); }
+    b.disabled = false; b.textContent = '⟳ Refresh';
+  });
 
-      const grid = document.getElementById('grid');
-      grid.innerHTML = '<div style="color:var(--text-muted);">Fetching matches...</div>';
-      document.getElementById('searchInput').value = ''; // Reset search on tab change
-      
-      try {
-        const res = await fetch(`/catalog/tv/${catalogId}.json`);
-        const data = await res.json();
-        currentMatches = data.metas || [];
-        renderGrid(currentMatches);
-      } catch (err) {
-        console.error(err);
-        grid.innerHTML = '<div style="color:var(--accent);">Failed to load catalog. Ensure the Nuvio plugin is running.</div>';
-      }
-    }
-
-    document.getElementById('searchInput').addEventListener('input', (e) => {
-      const query = e.target.value.toLowerCase();
-      const filtered = currentMatches.filter(meta => 
-        meta.name.toLowerCase().includes(query) || 
-        (meta.description && meta.description.toLowerCase().includes(query))
-      );
-      renderGrid(filtered);
-    });
-
-    function renderGrid(metas) {
-      const grid = document.getElementById('grid');
-      grid.innerHTML = '';
-      
-      if (!metas || metas.length === 0) {
-        grid.innerHTML = '<div style="color:var(--text-muted);">No live matches found matching your criteria right now.</div>';
-        return;
-      }
-
-      metas.forEach(meta => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.onclick = () => fetchAndPlay(meta.id);
-        
-        const isLive = meta.name.includes('🔴');
-        const cleanName = meta.name.replace('🔴 [LIVE] ', '');
-        
-        card.innerHTML = `
-          <div class="poster-container">
-            <img class="background" src="${meta.background}" onerror="this.style.display='none'" loading="lazy">
-            <img class="poster" src="${meta.poster}" onerror="this.src='https://raw.githubusercontent.com/stremio/stremio-addon-sdk/master/docs/api/images/stremio-logo.png'" loading="lazy">
-            ${meta.logo && meta.logo !== meta.poster ? `<img class="logo" src="${meta.logo}">` : ''}
-            ${isLive ? '<div class="live-badge">LIVE</div>' : ''}
-          </div>
-          <div class="info">
-            <div class="title">${cleanName}</div>
-            <div class="desc">${(meta.description || '').replace(/\n/g, '<br>')}</div>
-          </div>
-        `;
-        grid.appendChild(card);
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+  async function loadTabs() {
+    try {
+      const manifest = await (await fetch('/manifest.json')).json();
+      const tabs = $('#tabs'); tabs.innerHTML = '';
+      let first = null;
+      manifest.catalogs.forEach(c => {
+        if (c.type !== 'tv' || c.id === 'nuvio_sports_teams') return;
+        const el = document.createElement('button');
+        el.className = 'tab'; el.textContent = c.name;
+        el.onclick = () => loadCatalog(c.id, el);
+        tabs.appendChild(el);
+        if (!first) first = { id: c.id, el };
       });
+      if (first) loadCatalog(first.id, first.el);
+    } catch (e) {
+      $('#tabs').innerHTML = '<span class="tab">Failed to load manifest</span>';
     }
+  }
 
-    async function fetchAndPlay(id) {
-      document.getElementById('player-overlay').style.display = 'flex';
-      document.getElementById('loader').style.display = 'flex';
-      document.getElementById('source-selector').style.display = 'none';
-      const video = document.getElementById('video');
-      video.style.opacity = '0';
-      
-      try {
-        const res = await fetch(`/stream/tv/${id}.json`);
-        const data = await res.json();
-        
-        if (!data.streams || data.streams.length === 0) {
-          alert('No streams found for this match.');
-          closePlayer();
-          return;
-        }
-
-        if (data.streams.length === 1) {
-          playStreamUrl(data.streams[0].url, data.streams[0]);
-        } else {
-          document.getElementById('loader').style.display = 'none';
-          const selector = document.getElementById('source-selector');
-          const btnContainer = document.getElementById('source-buttons');
-          btnContainer.innerHTML = '';
-          
-          data.streams.forEach(stream => {
-            const btn = document.createElement('button');
-            btn.className = 'source-btn';
-            btn.innerText = stream.title;
-            btn.onclick = () => {
-              selector.style.display = 'none';
-              document.getElementById('loader').style.display = 'flex';
-              playStreamUrl(stream.url, stream);
-            };
-            btnContainer.appendChild(btn);
-          });
-          
-          selector.style.display = 'flex';
-        }
-      } catch (err) {
-        console.error(err);
-        alert('Error resolving stream.');
-        closePlayer();
-      }
+  async function loadCatalog(id, el, silent) {
+    activeCatalog = { id, el };
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    if (!silent) { $('#grid').innerHTML = '<div class="empty">Loading…</div>'; $('#search').value = ''; }
+    try {
+      const data = await (await fetch(`/catalog/tv/${id}.json`, { cache: 'no-store' })).json();
+      current = data.metas || [];
+      render(filter(current, $('#search').value));
+    } catch (e) {
+      $('#grid').innerHTML = '<div class="empty">Failed to load catalog.</div>';
     }
+  }
 
-    function playStreamUrl(url, streamObj = null) {
-      if (streamObj && streamObj.externalUrl) {
-        window.open(streamObj.externalUrl, '_blank');
-        closePlayer();
-        return;
-      }
-      
-      const video = document.getElementById('video');
-      document.getElementById('loader').style.display = 'none';
-      video.style.opacity = '1';
+  const filter = (metas, q) => {
+    q = (q || '').toLowerCase().trim();
+    if (!q) return metas;
+    return metas.filter(m => m.name.toLowerCase().includes(q) || (m.description || '').toLowerCase().includes(q) || (m.cast || []).some(c => c.toLowerCase().includes(q)));
+  };
+  $('#search').addEventListener('input', (e) => render(filter(current, e.target.value)));
 
-      if (!url) {
-        alert('This stream cannot be played in the browser directly.');
-        closePlayer();
-        return;
-      }
+  function render(metas) {
+    const grid = $('#grid'); grid.innerHTML = '';
+    if (!metas.length) { grid.innerHTML = '<div class="empty">Nothing here right now. Try another tab or hit Refresh.</div>'; return; }
+    const frag = document.createDocumentFragment();
+    metas.forEach(m => {
+      const isLive = m.releaseInfo === 'LIVE';
+      const is247 = m.releaseInfo === '24/7';
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.onclick = () => openMatch(m);
+      card.innerHTML = `
+        <div class="poster">
+          <img src="${m.poster}" loading="lazy" alt="">
+          ${m.logo && m.logo !== m.poster ? `<img class="logo" src="${m.logo}" alt="">` : ''}
+          <span class="tag ${isLive ? 'live' : ''}">${isLive ? '● LIVE' : (is247 ? '24/7' : m.releaseInfo || 'Upcoming')}</span>
+        </div>
+        <div class="info">
+          <div class="title">${m.name.replace(/^(🔴|📺)\s*/, '')}</div>
+          <div class="meta">${(m.description || '')}</div>
+        </div>`;
+      frag.appendChild(card);
+    });
+    grid.appendChild(frag);
+  }
 
-      if (Hls.isSupported()) {
-        if (hls) hls.destroy();
-        hls = new Hls({ maxBufferLength: 30 });
-        hls.loadSource(url);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(e=>console.log(e)));
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = url;
-        video.play().catch(e=>console.log(e));
-      }
+  // ── Player ─────────────────────────────────────────────────────────────────
+  const overlay = $('#overlay'), video = $('#video'), loader = $('#loader');
+  function showLoader(text) { loader.style.display = 'flex'; $('#loaderText').textContent = text; }
+  function hideLoader() { loader.style.display = 'none'; }
+
+  async function openMatch(m) {
+    overlay.classList.add('open');
+    $('#ovTitle').textContent = m.name;
+    $('#streamList').innerHTML = '';
+    showLoader('Resolving streams… this can take up to 20 s');
+    try {
+      const data = await (await fetch(`/stream/tv/${m.id}.json`, { cache: 'no-store' })).json();
+      const streams = data.streams || [];
+      if (!streams.length) { showLoader('No streams available right now. Try again in a minute.'); return; }
+      const list = $('#streamList');
+      streams.forEach((s, i) => {
+        const el = document.createElement('div');
+        el.className = 'stream';
+        const direct = !!s.url;
+        el.innerHTML = `<span class="k ${direct ? 'direct' : 'web'}">${direct ? 'DIRECT' : 'BROWSER'}</span>\n${s.title || s.name}`;
+        el.onclick = () => play(s, el);
+        list.appendChild(el);
+        if (i === 0 && direct) play(s, el);
+      });
+      if (!streams[0].url) showLoader('Only browser streams available. Pick one on the right.');
+    } catch (e) {
+      showLoader('Failed to resolve streams.');
     }
+  }
 
-    function closePlayer() {
-      document.getElementById('player-overlay').style.display = 'none';
-      document.getElementById('source-selector').style.display = 'none';
-      const video = document.getElementById('video');
-      video.pause();
-      video.src = '';
-      if (hls) {
-        hls.destroy();
-        hls = null;
-      }
+  function play(s, el) {
+    document.querySelectorAll('.stream').forEach(x => x.classList.remove('active'));
+    el.classList.add('active');
+    if (!s.url) { window.open(s.externalUrl, '_blank', 'noopener'); return; }
+    showLoader('Loading stream…');
+    if (hls) { hls.destroy(); hls = null; }
+    if (Hls.isSupported()) {
+      hls = new Hls({ liveSyncDurationCount: 3, lowLatencyMode: true });
+      hls.loadSource(s.url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { hideLoader(); video.play().catch(() => {}); });
+      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showLoader('Stream failed. Pick another source.'); });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = s.url; video.addEventListener('loadedmetadata', () => { hideLoader(); video.play().catch(() => {}); }, { once: true });
+    } else {
+      showLoader('This browser cannot play HLS.');
     }
+  }
 
-    loadTabs();
-  </script>
+  function closePlayer() {
+    overlay.classList.remove('open');
+    video.pause(); video.removeAttribute('src'); video.load();
+    if (hls) { hls.destroy(); hls = null; }
+  }
+  $('#closeBtn').addEventListener('click', closePlayer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && overlay.classList.contains('open')) closePlayer(); });
+
+  loadStatus(); loadTabs();
+  setInterval(loadStatus, 30000);
+  setInterval(() => { if (activeCatalog && !overlay.classList.contains('open')) loadCatalog(activeCatalog.id, activeCatalog.el, true); }, 120000);
+})();
+</script>
 </body>
 </html>

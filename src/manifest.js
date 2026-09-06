@@ -1,20 +1,19 @@
 /**
- * manifest.js — Stremio / Nuvio Addon Manifest (iptv-org edition)
- *
- * Single catalog: all free live sports channels from iptv-org,
- * with a search catalog so users can filter by channel name.
+ * manifest.js — Stremio / Nuvio Addon Manifest
  */
 
 const { addonBuilder } = require('stremio-addon-sdk');
+const { DEFAULT_SOURCE_IDS } = require('./sources');
+const pkg = require('../package.json');
 
 const manifest = {
   id: 'community.nuvio.live-sports',
-  version: '3.0.0',
+  version: pkg.version,
   name: '🏆 Nuvio Live Sports',
   description:
-    'The ultimate live sports aggregator. Stream live Football, NBA, NFL, NHL, F1, and more. ' +
-    'Scrapes high-speed streams from multiple providers including StreamFree, TimStreams, and IPTV. Zero-lag proxy included.',
-  logo: 'https://iptv-org.github.io/iptv/categories/sports.m3u',
+    'Live sports aggregator: Football, NBA, NFL, NHL, MLB, F1, UFC, cricket and more. ' +
+    'Direct in-app HLS streams from Streamed, StreamFree, PPV, SportsindX, WatchFooty, NTV, TimStreams and others.',
+  logo: '/logo.png',
 
   types: ['tv'],
   resources: ['catalog', 'meta', 'stream'],
@@ -35,14 +34,17 @@ const manifest = {
     { type: 'tv', id: 'nuvio_sports_darts', name: '🎯 Darts', extra: [{ name: 'search', isRequired: false }] },
     { type: 'tv', id: 'nuvio_sports_college', name: '🎓 College Sports', extra: [{ name: 'search', isRequired: false }] },
     { type: 'tv', id: 'nuvio_sports_other', name: '🏅 Other Sports', extra: [{ name: 'search', isRequired: false }] },
-    { type: 'tv', id: 'nuvio_sports_networks', name: '📺 24/7 Sports TV', extra: [{ name: 'search', isRequired: false }] },
+
     { type: 'tv', id: 'nuvio_sports_upcoming', name: '⏱️ Upcoming', extra: [{ name: 'search', isRequired: false }] },
     { type: 'tv', id: 'nuvio_sports_teams', name: '⭐ Your Teams', extra: [{ name: 'search', isRequired: false }] }
   ],
 
   config: [
     { key: 'teams', title: 'Favorite Teams (comma separated)', type: 'text' },
-    { key: 'sports', title: 'Enabled Sports (comma separated)', type: 'text', default: 'all' }
+    { key: 'sports', title: 'Enabled Sports (comma separated)', type: 'text', default: 'all' },
+    { key: 'sources', title: 'Enabled Sources (comma separated)', type: 'text', default: DEFAULT_SOURCE_IDS.join(',') },
+    { key: 'directOnly', title: 'Hide browser-only streams', type: 'checkbox' },
+    { key: 'timezone', title: 'Timezone', type: 'text', default: 'UTC' }
   ],
 
   idPrefixes: ['nuvio_sport_'],

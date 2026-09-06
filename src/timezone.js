@@ -33,7 +33,19 @@ function parseTimezone(dateValue, timeZone = 'UTC') {
   }
 
   // Replace spaces with T for proper ISO format compatibility
-  const cleanStr = str.replace(' ', 'T');
+  let cleanStr = str.replace(' ', 'T');
+  
+  // If the string is just a time (e.g. "21:30" or "21:30:00"), prepend today's date in target timezone.
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(cleanStr)) {
+    const tzDateStr = new Intl.DateTimeFormat('en-US', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+    const [mm, dd, yyyy] = tzDateStr.split('/');
+    // Use padStart to ensure time has leading zeros for valid ISO format
+    let timePart = cleanStr;
+    if (timePart.length === 4) timePart = '0' + timePart; // e.g. "9:30" -> "09:30"
+    cleanStr = `${yyyy}-${mm}-${dd}T${timePart}`;
+  }
   
   // We treat the incoming local time string as if it were UTC.
   // Example: "2026-08-16T16:05" -> "2026-08-16T16:05Z"

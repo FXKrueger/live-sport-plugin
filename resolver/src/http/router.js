@@ -1,4 +1,3 @@
-import { serve } from '../relay/m3u8.js'
 import { run } from '../resolve/run.js'
 import { serveStatic } from './static.js'
 
@@ -44,11 +43,6 @@ export async function route(req, res) {
   const { pathname, searchParams, origin } = loc
 
   try {
-    if (pathname.startsWith('/api/hls')) {
-      await serve(res, searchParams, origin)
-      return
-    }
-
     if (pathname === '/api/stream') {
       if (req.method !== 'POST') {
         json(res, 405, { error: 'POST required' })

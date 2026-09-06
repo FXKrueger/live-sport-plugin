@@ -1,20 +1,22 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 WORKDIR /app
 
-# Copy package files and install all dependencies
+# Install dependencies first so Docker layer cache survives source edits
 COPY package*.json ./
-RUN npm install
+RUN npm install --no-audit --no-fund
 
-# Copy the rest of the application code
+COPY resolver/package*.json ./resolver/
+RUN cd resolver && npm install --no-audit --no-fund
+
+# Copy source and build the bundled distribution
 COPY . .
-
-# Build the bundled output in dist/
 RUN npm run build
 
-# Set default port
 ENV PORT=7000
+ENV NODE_ENV=production
 EXPOSE 7000
 
-# Start the application
-CMD ["npm", "start"]
+HEALTHCHECK --interval=60s --timeout=10s --start-period=40s CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||7000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/index.js"]

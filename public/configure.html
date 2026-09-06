@@ -1,479 +1,307 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nuvio Live Sports | Premium Setup</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Outfit:wght@700;900&display=swap"
-    rel="stylesheet">
+  <title>Nuvio Live Sports · Setup</title>
+  <link rel="icon" href="/logo.png">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@700;900&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #09090b;
-      --card-bg: rgba(28, 28, 30, 0.4);
-      --card-border: rgba(255, 255, 255, 0.05);
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --accent: #ef4444;
-      --accent-glow: rgba(239, 68, 68, 0.3);
-      --glass: rgba(255, 255, 255, 0.02);
+      --bg: #09090b; --panel: #121215; --panel-2: #18181c; --border: rgba(255,255,255,0.08);
+      --text: #f4f4f5; --muted: #9ca3af; --accent: #ef4444; --accent-2: #f97316; --ok: #22c55e; --warn: #f59e0b;
     }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; }
+    body { background-image: radial-gradient(circle at 10% 0%, rgba(239,68,68,0.10), transparent 35%), radial-gradient(circle at 90% 20%, rgba(249,115,22,0.06), transparent 30%); }
+    a { color: inherit; }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 80px; }
+    header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+    header img { width: 60px; height: 60px; border-radius: 16px; border: 1px solid var(--border); }
+    header h1 { font-family: 'Outfit', sans-serif; font-size: 28px; margin: 0; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    header .links { margin-left: auto; display: flex; gap: 8px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); text-decoration: none; font-size: 13px; font-weight: 600; }
+    .chip:hover { background: rgba(255,255,255,0.08); }
 
-    body {
-      margin: 0;
-      padding: 20px;
-      font-family: 'Inter', sans-serif;
-      background-color: var(--bg);
-      color: var(--text);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      background-image:
-        radial-gradient(circle at 15% 50%, rgba(239, 68, 68, 0.08), transparent 25%),
-        radial-gradient(circle at 85% 30%, rgba(239, 68, 68, 0.05), transparent 25%);
-    }
+    .layout { display: grid; grid-template-columns: 1fr 340px; gap: 24px; align-items: start; }
+    @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .sticky { position: static !important; } }
 
-    .container {
-      background: var(--card-bg);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      padding: 40px;
-      border-radius: 24px;
-      border: 1px solid var(--card-border);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-      width: 100%;
-      max-width: 500px;
-      position: relative;
-    }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px; margin-bottom: 18px; }
+    .card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .card h2 .step { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+    .card .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; line-height: 1.5; }
 
-    .header {
-      text-align: center;
-      margin-bottom: 30px;
-    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .opt { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid transparent; cursor: pointer; font-size: 14px; user-select: none; transition: border-color .15s, background .15s; }
+    .opt:hover { border-color: rgba(255,255,255,0.15); }
+    .opt.on { border-color: rgba(239,68,68,0.5); background: rgba(239,68,68,0.10); }
+    .opt input { appearance: none; width: 18px; height: 18px; border: 2px solid #52525b; border-radius: 5px; margin: 0; flex: none; position: relative; cursor: pointer; }
+    .opt input:checked { background: var(--accent); border-color: var(--accent); }
+    .opt input:checked::after { content: '✓'; color: #fff; font-size: 12px; font-weight: 800; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 
-    h1 {
-      font-family: 'Outfit', sans-serif;
-      font-weight: 900;
-      margin: 0 0 10px 0;
-      font-size: 32px;
-      background: linear-gradient(135deg, #fff 0%, #aaa 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-    }
+    .src { flex-direction: column; align-items: stretch; gap: 6px; padding: 12px; }
+    .src .row { display: flex; align-items: center; gap: 10px; }
+    .src .name { font-weight: 600; flex: 1; }
+    .src .desc { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .badge { font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: 3px 7px; border-radius: 6px; }
+    .badge.direct { background: rgba(34,197,94,0.15); color: var(--ok); }
+    .badge.mixed { background: rgba(245,158,11,0.15); color: var(--warn); }
+    .badge.web { background: rgba(156,163,175,0.15); color: var(--muted); }
+    .src-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 
-    .dot {
-      width: 12px;
-      height: 12px;
-      background: var(--accent);
-      border-radius: 50%;
-      display: inline-block;
-      box-shadow: 0 0 10px var(--accent-glow);
-      animation: pulse 2s infinite;
-    }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .btn-sm { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
+    .btn-sm:hover { background: rgba(255,255,255,0.09); }
 
-    @keyframes pulse {
+    label.field { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+    input[type=text], select { width: 100%; padding: 12px 14px; border-radius: 10px; background: #0c0c0f; border: 1px solid var(--border); color: #fff; font-size: 14px; font-family: inherit; outline: none; }
+    input[type=text]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
+    select option { background: #18181c; }
 
-      0%,
-      100% {
-        opacity: 1;
-        transform: scale(1);
-      }
+    .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); cursor: pointer; }
+    .toggle .t { font-size: 14px; font-weight: 600; }
+    .toggle .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .switch { width: 42px; height: 24px; border-radius: 999px; background: #3f3f46; position: relative; flex: none; transition: background .15s; }
+    .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .toggle.on .switch { background: var(--accent); }
+    .toggle.on .switch::after { transform: translateX(18px); }
 
-      50% {
-        opacity: 0.5;
-        transform: scale(1.3);
-      }
-    }
-
-    p.subtitle {
-      color: var(--text-muted);
-      font-size: 15px;
-      margin: 0;
-    }
-
-    .section {
-      background: var(--glass);
-      border: 1px solid var(--card-border);
-      border-radius: 16px;
-      padding: 24px;
-      margin-bottom: 24px;
-    }
-
-    h3 {
-      margin: 0 0 16px 0;
-      font-size: 16px;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      color: #fff;
-    }
-
-    .sports-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
-    }
-
-    .checkbox-label {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      cursor: pointer;
-      font-size: 14px;
-      padding: 8px 12px;
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid transparent;
-      transition: all 0.2s;
-    }
-
-    .checkbox-label:hover {
-      background: rgba(255, 255, 255, 0.06);
-    }
-
-    .checkbox-label.active {
-      border-color: rgba(239, 68, 68, 0.3);
-      background: rgba(239, 68, 68, 0.1);
-    }
-
-    input[type="checkbox"] {
-      appearance: none;
-      width: 18px;
-      height: 18px;
-      border: 2px solid #555;
-      border-radius: 4px;
-      outline: none;
-      cursor: pointer;
-      position: relative;
-      transition: all 0.2s;
-    }
-
-    input[type="checkbox"]:checked {
-      background: var(--accent);
-      border-color: var(--accent);
-    }
-
-    input[type="checkbox"]:checked::after {
-      content: '✓';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      color: white;
-      font-size: 12px;
-      font-weight: bold;
-    }
-
-    .input-group {
-      margin-top: 16px;
-    }
-
-    .input-group label {
-      display: block;
-      font-size: 13px;
-      color: var(--text-muted);
-      margin-bottom: 8px;
-    }
-
-    input[type="text"] {
-      width: 100%;
-      padding: 14px 16px;
-      background: rgba(0, 0, 0, 0.2);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      color: #fff;
-      font-size: 15px;
-      box-sizing: border-box;
-      font-family: 'Inter', sans-serif;
-      transition: all 0.2s;
-    }
-
-    input[type="text"]:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
-    }
-
-    .btn {
-      display: block;
-      width: 100%;
-      padding: 16px;
-      background: var(--accent);
-      color: #fff;
-      text-align: center;
-      border: none;
-      border-radius: 12px;
-      font-size: 16px;
-      font-weight: 800;
-      cursor: pointer;
-      text-decoration: none;
-      box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4);
-      transition: all 0.3s;
-      font-family: 'Outfit', sans-serif;
-      letter-spacing: 1px;
-    }
-
-    .btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(239, 68, 68, 0.6);
-    }
-
-    .btn:active {
-      transform: translateY(1px);
-    }
+    .sticky { position: sticky; top: 20px; }
+    .install .url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; background: #0c0c0f; border: 1px solid var(--border); border-radius: 10px; padding: 12px; color: #d4d4d8; max-height: 110px; overflow: auto; }
+    .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; border: none; font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 15px; letter-spacing: .02em; cursor: pointer; text-align: center; text-decoration: none; margin-top: 10px; transition: transform .1s, box-shadow .2s; }
+    .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 6px 20px rgba(239,68,68,0.35); }
+    .btn.secondary { background: #27272a; color: #fff; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn.ok { background: var(--ok) !important; }
+    ol.steps { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    ol.steps b { color: var(--text); }
+    .summary { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+    .summary span { font-size: 11px; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.05); color: var(--muted); }
+    .foot { margin-top: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+    .foot a { color: #f87171; }
   </style>
 </head>
-
 <body>
-  <div class="container">
-    <div class="header">
-      <h1><span class="dot"></span> Nuvio Sports</h1>
-      <p class="subtitle">Customize your ultimate live sports dashboard.</p>
+<div class="wrap">
+  <header>
+    <img src="/logo.png" alt="Nuvio Live Sports">
+    <div>
+      <h1>Nuvio Live Sports</h1>
+      <p>Pick your sports and sources, then install the addon in Nuvio or Stremio.</p>
     </div>
-
-    <div class="section">
-      <h3>Select Sports</h3>
-      <div class="sports-grid" id="sportsGrid">
-        <label class="checkbox-label active"><input type="checkbox" value="football" checked> ⚽ Football</label>
-        <label class="checkbox-label active"><input type="checkbox" value="basketball" checked> 🏀 Basketball</label>
-        <label class="checkbox-label active"><input type="checkbox" value="cricket" checked> 🏏 Cricket</label>
-        <label class="checkbox-label active"><input type="checkbox" value="american_football" checked> 🏈 NFL</label>
-        <label class="checkbox-label active"><input type="checkbox" value="motorsport" checked> 🏎️ Racing</label>
-        <label class="checkbox-label active"><input type="checkbox" value="hockey" checked> 🏒 Hockey</label>
-        <label class="checkbox-label active"><input type="checkbox" value="baseball" checked> ⚾ Baseball</label>
-        <label class="checkbox-label active"><input type="checkbox" value="rugby" checked> 🏉 Rugby</label>
-        <label class="checkbox-label active"><input type="checkbox" value="college" checked> 🎓 College</label>
-        <label class="checkbox-label active"><input type="checkbox" value="mma" checked> 🥊 MMA</label>
-        <label class="checkbox-label active"><input type="checkbox" value="golf" checked> ⛳ Golf</label>
-        <label class="checkbox-label active"><input type="checkbox" value="tennis" checked> 🎾 Tennis</label>
-        <label class="checkbox-label active"><input type="checkbox" value="darts" checked> 🎯 Darts</label>
-        <label class="checkbox-label active"><input type="checkbox" value="other" checked> 📡 Other Sports</label>
-      </div>
+    <div class="links">
+      <a class="chip" href="/">📺 Dashboard</a>
+      <a class="chip" href="https://github.com/rajhodedara/live-sport-plugin" target="_blank" rel="noopener">GitHub</a>
     </div>
+  </header>
 
-    <div class="section">
-      <h3>Localization</h3>
-      <div class="input-group">
-        <label>Select your local timezone (Match times will be displayed in this timezone)</label>
-        <select id="timezone" style="width: 100%; padding: 14px 16px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--card-border); border-radius: 12px; color: #fff; font-size: 15px; box-sizing: border-box; font-family: 'Inter', sans-serif; transition: all 0.2s; outline: none; cursor: pointer;">
-        </select>
-      </div>
-    </div>
+  <div class="layout">
+    <div>
+      <section class="card">
+        <h2><span class="step">1</span> Sports</h2>
+        <p class="hint">Only the selected sports get their own catalog row. "Live Now" and "Upcoming" always show everything you selected.</p>
+        <div class="toolbar">
+          <button class="btn-sm" data-sel="sports" data-mode="all">Select all</button>
+          <button class="btn-sm" data-sel="sports" data-mode="none">Clear</button>
+        </div>
+        <div class="grid" id="sportsGrid">
+          <label class="opt on"><input type="checkbox" value="football" checked> ⚽ Football</label>
+          <label class="opt on"><input type="checkbox" value="basketball" checked> 🏀 Basketball</label>
+          <label class="opt on"><input type="checkbox" value="american_football" checked> 🏈 NFL</label>
+          <label class="opt on"><input type="checkbox" value="hockey" checked> 🏒 Hockey</label>
+          <label class="opt on"><input type="checkbox" value="baseball" checked> ⚾ Baseball</label>
+          <label class="opt on"><input type="checkbox" value="motorsport" checked> 🏎️ Motorsport</label>
+          <label class="opt on"><input type="checkbox" value="mma" checked> 🥊 MMA & Boxing</label>
+          <label class="opt on"><input type="checkbox" value="cricket" checked> 🏏 Cricket</label>
+          <label class="opt on"><input type="checkbox" value="tennis" checked> 🎾 Tennis</label>
+          <label class="opt on"><input type="checkbox" value="golf" checked> ⛳ Golf</label>
+          <label class="opt on"><input type="checkbox" value="rugby" checked> 🏉 Rugby</label>
+          <label class="opt on"><input type="checkbox" value="darts" checked> 🎯 Darts</label>
+          <label class="opt on"><input type="checkbox" value="college" checked> 🎓 College</label>
+          <label class="opt on"><input type="checkbox" value="other" checked> 🏅 Other</label>
+        </div>
+      </section>
 
-    <div class="section">
-      <h3>Priority Tracking</h3>
-      <div class="input-group">
-        <label>Favorite Teams (Comma Separated)</label>
+      <section class="card">
+        <h2><span class="step">2</span> Stream sources</h2>
+        <p class="hint">
+          <span class="badge direct">Direct</span> plays inside Nuvio.
+          <span class="badge mixed">Mixed</span> is direct when possible, browser otherwise.
+          <span class="badge web">Browser</span> always opens a web page.
+        </p>
+        <div class="toolbar">
+          <button class="btn-sm" data-sel="sources" data-mode="recommended">Recommended</button>
+          <button class="btn-sm" data-sel="sources" data-mode="direct">Direct only</button>
+          <button class="btn-sm" data-sel="sources" data-mode="all">Select all</button>
+          <button class="btn-sm" data-sel="sources" data-mode="none">Clear</button>
+        </div>
+        <div class="grid src-grid" id="sourcesGrid"><div class="hint">Loading sources…</div></div>
+        <div style="margin-top:14px">
+          <div class="toggle" id="directOnlyToggle">
+            <div><div class="t">Hide browser-only streams</div><div class="s">Only list streams that play natively. Fewer options, zero browser hops.</div></div>
+            <div class="switch"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">3</span> Personalise</h2>
+        <label class="field">Timezone (kick-off times are shown in this zone)</label>
+        <select id="timezone"></select>
+        <label class="field">Favourite teams — creates a "⭐ Your Teams" catalog (comma separated)</label>
         <input type="text" id="teams" placeholder="e.g. Arsenal, Lakers, Ferrari">
-      </div>
+      </section>
     </div>
 
-    <div class="section">
-      <h3>Streaming Sources</h3>
-      <div class="sports-grid" id="sourcesGrid">
-        <label class="checkbox-label active"><input type="checkbox" value="streamfree" checked> 🌐 StreamFree (Recommended) (Web Browser Source)</label>
-        <label class="checkbox-label active"><input type="checkbox" value="timstreams" checked> 📺 TimStreams (Recommended)</label>
-        <label class="checkbox-label active"><input type="checkbox" value="bintv" checked> 📺 BinTV (Recommended)</label>
-        <label class="checkbox-label active"><input type="checkbox" value="ntv" checked> 📺 NTV</label>
-        <label class="checkbox-label active"><input type="checkbox" value="iptv-org" checked> 📡 IPTV Org (Direct IPTV)</label>
-        <label class="checkbox-label active"><input type="checkbox" value="sportyhunter" checked> 📺 SportyHunter</label>
-        <label class="checkbox-label active"><input type="checkbox" value="streamsports" checked> 📺 StreamSports</label>
-        <label class="checkbox-label active"><input type="checkbox" value="watchfooty" checked> 📺 WatchFooty</label>
-        <label class="checkbox-label active"><input type="checkbox" value="cdnlive" checked> 📺 CDNLiveTV</label>
-        <label class="checkbox-label active"><input type="checkbox" value="streamsports99" checked> 📺 StreamSports99</label>
-        <label class="checkbox-label active"><input type="checkbox" value="ppvdomains" checked> 🌐 PPV Domains (Web Browser Source)</label>
-        <label class="checkbox-label active"><input type="checkbox" value="streamic" checked> 🌐 Streamic (Web Browser Source)</label>
-      </div>
-    </div>
-
-    <a href="#" id="installBtn" class="btn">INSTALL ADDON</a>
-    <button id="copyBtn" class="btn" style="background: #333; margin-top: 12px; font-size: 14px;">COPY LINK (FOR NUVIO APP)</button>
+    <aside class="sticky">
+      <section class="card install">
+        <h2><span class="step">4</span> Install</h2>
+        <p class="hint">Your personal addon link. It updates as you change settings above.</p>
+        <div class="url" id="manifestUrl">…</div>
+        <button class="btn primary" id="copyBtn">Copy link for Nuvio</button>
+        <a class="btn secondary" id="installBtn" href="#">Open in Stremio</a>
+        <ol class="steps">
+          <li><b>Nuvio:</b> Settings → Addons → Add addon → paste the link.</li>
+          <li><b>Stremio:</b> click "Open in Stremio", or paste the link into the addon search box.</li>
+          <li>Reinstall after changing settings; the link encodes your choices.</li>
+        </ol>
+        <div class="summary" id="summary"></div>
+      </section>
+      <div class="foot">Self-hosted · <a href="https://ko-fi.com/rajodedara" target="_blank" rel="noopener">Support the original author</a></div>
+    </aside>
   </div>
+</div>
 
-  <script>
-    const btn = document.getElementById('installBtn');
-    const copyBtn = document.getElementById('copyBtn');
-    const input = document.getElementById('teams');
-    const checkboxes = document.querySelectorAll('#sportsGrid input[type="checkbox"]');
-    const sourceCheckboxes = document.querySelectorAll('#sourcesGrid input[type="checkbox"]');
-    const timezoneSelect = document.getElementById('timezone');
+<script>
+(async () => {
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
-    // Attempt to load existing config from URL
-    let existingConfig = {};
+  // ── Existing config from /<base64url>/configure ────────────────────────────
+  let existing = {};
+  try {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2 && parts[parts.length - 1] === 'configure') {
+      let b64 = parts[parts.length - 2].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      existing = JSON.parse(decodeURIComponent(escape(atob(b64))));
+    }
+  } catch (e) { console.warn('Could not parse existing config', e); }
+
+  // ── Sources from the server registry ───────────────────────────────────────
+  let SOURCES = [];
+  try {
+    const r = await fetch('/api/sources');
+    SOURCES = (await r.json()).sources || [];
+  } catch (e) { console.error(e); }
+
+  const srcGrid = $('#sourcesGrid');
+  srcGrid.innerHTML = '';
+  SOURCES.forEach(s => {
+    const label = document.createElement('label');
+    label.className = 'opt src' + (s.defaultEnabled ? ' on' : '');
+    label.innerHTML = `
+      <div class="row"><input type="checkbox" value="${s.id}" ${s.defaultEnabled ? 'checked' : ''}>
+        <span class="name">${s.icon} ${s.label}</span>
+        <span class="badge ${s.kind}">${s.kind === 'web' ? 'Browser' : s.kind}</span></div>
+      <div class="desc">${s.description}</div>`;
+    srcGrid.appendChild(label);
+  });
+
+  const sportBoxes = $$('#sportsGrid input');
+  const sourceBoxes = $$('#sourcesGrid input');
+  const teams = $('#teams');
+  const tz = $('#timezone');
+  const directToggle = $('#directOnlyToggle');
+  let directOnly = false;
+
+  // ── Timezones ──────────────────────────────────────────────────────────────
+  const localTz = existing.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch (_) {}
+  if (!zones.length) zones = ['UTC','Europe/London','Europe/Berlin','Europe/Paris','America/New_York','America/Chicago','America/Denver','America/Los_Angeles','Asia/Kolkata','Asia/Dubai','Asia/Tokyo','Australia/Sydney'];
+  if (localTz && !zones.includes(localTz)) zones.unshift(localTz);
+  const offsetOf = (zone) => {
     try {
-      const pathParts = window.location.pathname.split('/');
-      if (pathParts.length >= 3 && pathParts[pathParts.length - 1] === 'configure') {
-        const encoded = pathParts[pathParts.length - 2];
-        let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-        while (base64.length % 4) base64 += '=';
-        existingConfig = JSON.parse(decodeURIComponent(escape(atob(base64))));
-      }
-    } catch (e) {
-      console.warn("Could not parse existing config from URL", e);
+      const p = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find(x => x.type === 'timeZoneName');
+      return p ? p.value.replace('GMT', 'UTC') : '';
+    } catch (_) { return ''; }
+  };
+  zones.forEach(z => {
+    const o = document.createElement('option');
+    o.value = z; o.textContent = `${z.replace(/_/g, ' ')}  (${offsetOf(z)})`;
+    if (z === localTz) o.selected = true;
+    tz.appendChild(o);
+  });
+
+  // ── Apply existing config ──────────────────────────────────────────────────
+  const setBoxes = (boxes, ids) => boxes.forEach(cb => { cb.checked = ids.includes(cb.value); cb.closest('.opt').classList.toggle('on', cb.checked); });
+  if (existing.teams) teams.value = existing.teams;
+  if (typeof existing.sports === 'string') {
+    if (existing.sports === 'none') setBoxes(sportBoxes, []);
+    else if (existing.sports !== 'all') setBoxes(sportBoxes, existing.sports.split(','));
+  }
+  if (typeof existing.sources === 'string') {
+    if (existing.sources === 'none') setBoxes(sourceBoxes, []);
+    else if (existing.sources === 'all') setBoxes(sourceBoxes, SOURCES.map(s => s.id));
+    else setBoxes(sourceBoxes, existing.sources.split(','));
+  }
+  if (existing.directOnly === true || existing.directOnly === 'true' || existing.directOnly === '1') directOnly = true;
+  directToggle.classList.toggle('on', directOnly);
+
+  // ── Build link ─────────────────────────────────────────────────────────────
+  let manifestUrl = '';
+  function update() {
+    const sports = sportBoxes.filter(cb => cb.checked).map(cb => cb.value);
+    const sources = sourceBoxes.filter(cb => cb.checked).map(cb => cb.value);
+    const defaults = SOURCES.filter(s => s.defaultEnabled).map(s => s.id);
+    const config = {};
+    if (teams.value.trim()) config.teams = teams.value.trim();
+    if (tz.value) config.timezone = tz.value;
+    if (sports.length < sportBoxes.length) config.sports = sports.length ? sports.join(',') : 'none';
+    const sameAsDefault = sources.length === defaults.length && sources.every(s => defaults.includes(s));
+    if (!sameAsDefault) config.sources = sources.length ? (sources.length === SOURCES.length ? 'all' : sources.join(',')) : 'none';
+    if (directOnly) config.directOnly = true;
+
+    manifestUrl = location.origin + '/manifest.json';
+    if (Object.keys(config).length) {
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      manifestUrl = `${location.origin}/${b64}/manifest.json`;
     }
+    $('#manifestUrl').textContent = manifestUrl;
+    $('#installBtn').href = manifestUrl.replace(/^https?:\/\//, 'stremio://');
+    const directCount = SOURCES.filter(s => sources.includes(s.id) && s.kind !== 'web').length;
+    $('#summary').innerHTML = [
+      `${sports.length}/${sportBoxes.length} sports`,
+      `${sources.length} sources (${directCount} direct)`,
+      directOnly ? 'browser streams hidden' : 'browser fallbacks shown',
+      tz.value || 'UTC'
+    ].map(t => `<span>${t}</span>`).join('');
+  }
 
-    // Populate timezones
-    try {
-      const popularTimezones = [
-        { value: 'Pacific/Midway', label: 'Midway Island (GMT-11:00)' },
-        { value: 'Pacific/Honolulu', label: 'Hawaii (GMT-10:00)' },
-        { value: 'America/Anchorage', label: 'Alaska (GMT-09:00)' },
-        { value: 'America/Los_Angeles', label: 'Pacific Time (GMT-08:00)' },
-        { value: 'America/Denver', label: 'Mountain Time (GMT-07:00)' },
-        { value: 'America/Chicago', label: 'Central Time (GMT-06:00)' },
-        { value: 'America/New_York', label: 'Eastern Time (GMT-05:00)' },
-        { value: 'America/Halifax', label: 'Atlantic Time (GMT-04:00)' },
-        { value: 'America/Sao_Paulo', label: 'Brazil (GMT-03:00)' },
-        { value: 'Atlantic/South_Georgia', label: 'Mid-Atlantic (GMT-02:00)' },
-        { value: 'Atlantic/Azores', label: 'Azores (GMT-01:00)' },
-        { value: 'Europe/London', label: 'UK & Ireland (GMT+00:00)' },
-        { value: 'Europe/Paris', label: 'Western Europe (GMT+01:00)' },
-        { value: 'Europe/Athens', label: 'Eastern Europe (GMT+02:00)' },
-        { value: 'Europe/Moscow', label: 'Russia - Moscow (GMT+03:00)' },
-        { value: 'Asia/Dubai', label: 'UAE (GMT+04:00)' },
-        { value: 'Asia/Karachi', label: 'Pakistan (GMT+05:00)' },
-        { value: 'Asia/Kolkata', label: 'India (GMT+05:30)' },
-        { value: 'Asia/Dhaka', label: 'Bangladesh (GMT+06:00)' },
-        { value: 'Asia/Bangkok', label: 'Thailand & Vietnam (GMT+07:00)' },
-        { value: 'Asia/Singapore', label: 'Singapore & Malaysia (GMT+08:00)' },
-        { value: 'Asia/Tokyo', label: 'Japan (GMT+09:00)' },
-        { value: 'Australia/Sydney', label: 'Eastern Australia (GMT+10:00)' },
-        { value: 'Pacific/Noumea', label: 'New Caledonia (GMT+11:00)' },
-        { value: 'Pacific/Auckland', label: 'New Zealand (GMT+12:00)' }
-      ];
-
-      const localTz = existingConfig.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-      let matchedLocal = false;
-
-      popularTimezones.forEach(tz => {
-        const option = document.createElement('option');
-        option.value = tz.value;
-        option.textContent = tz.label;
-        option.style.background = '#1c1c1e';
-        option.style.color = '#fff';
-        if (tz.value === localTz) {
-          option.selected = true;
-          matchedLocal = true;
-        }
-        timezoneSelect.appendChild(option);
-      });
-
-      if (!matchedLocal && localTz) {
-        const option = document.createElement('option');
-        option.value = localTz;
-        const date = new Date();
-        const offset = -date.getTimezoneOffset();
-        const sign = offset >= 0 ? '+' : '-';
-        const hours = Math.floor(Math.abs(offset) / 60).toString().padStart(2, '0');
-        const mins = (Math.abs(offset) % 60).toString().padStart(2, '0');
-        const loc = localTz.split('/').pop().replace(/_/g, ' ');
-        option.textContent = `${loc} (GMT${sign}${hours}:${mins})`;
-        option.style.background = '#1c1c1e';
-        option.style.color = '#fff';
-        option.selected = true;
-        timezoneSelect.insertBefore(option, timezoneSelect.firstChild);
-      }
-    } catch(e) {
-      console.warn("Timezone API not fully supported.", e);
-    }
-
-    // Apply existing config settings to UI
-    if (existingConfig.teams) {
-      input.value = existingConfig.teams;
-    }
-    
-    if (existingConfig.sports) {
-      if (existingConfig.sports === 'none') {
-        checkboxes.forEach(cb => { cb.checked = false; cb.closest('.checkbox-label').classList.remove('active'); });
-      } else if (existingConfig.sports !== 'all') {
-        const sports = existingConfig.sports.split(',');
-        checkboxes.forEach(cb => {
-          cb.checked = sports.includes(cb.value);
-          if (cb.checked) cb.closest('.checkbox-label').classList.add('active');
-          else cb.closest('.checkbox-label').classList.remove('active');
-        });
-      }
-    }
-
-    if (existingConfig.sources) {
-      if (existingConfig.sources === 'none') {
-        sourceCheckboxes.forEach(cb => { cb.checked = false; cb.closest('.checkbox-label').classList.remove('active'); });
-      } else if (existingConfig.sources !== 'all') {
-        const sources = existingConfig.sources.split(',');
-        sourceCheckboxes.forEach(cb => {
-          cb.checked = sources.includes(cb.value);
-          if (cb.checked) cb.closest('.checkbox-label').classList.add('active');
-          else cb.closest('.checkbox-label').classList.remove('active');
-        });
-      }
-    }
-
-    let currentManifestUrl = '';
-
-    function updateLink() {
-      const teams = input.value.trim();
-      const selectedSports = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
-      const selectedSources = Array.from(sourceCheckboxes).filter(cb => cb.checked).map(cb => cb.value);
-      const tz = timezoneSelect.value;
-
-      let manifestUrl = window.location.origin + '/manifest.json';
-
-      const config = {};
-      if (teams) config.teams = teams;
-      if (tz) config.timezone = tz;
-
-      if (selectedSports.length < checkboxes.length) {
-        config.sports = selectedSports.join(',');
-        if (config.sports === '') config.sports = 'none';
-      }
-
-      if (selectedSources.length < sourceCheckboxes.length) {
-        config.sources = selectedSources.join(',');
-        if (config.sources === '') config.sources = 'none';
-      }
-
-      if (Object.keys(config).length > 0) {
-        const base64Str = btoa(unescape(encodeURIComponent(JSON.stringify(config))));
-        const encoded = base64Str.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        manifestUrl = window.location.origin + '/' + encoded + '/manifest.json';
-      }
-
-      currentManifestUrl = manifestUrl;
-      const installUrl = manifestUrl.replace(/^https?:\/\//, 'stremio://');
-      btn.href = installUrl;
-    }
-
-    copyBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      navigator.clipboard.writeText(currentManifestUrl).then(() => {
-        const originalText = copyBtn.innerText;
-        copyBtn.innerText = 'COPIED TO CLIPBOARD!';
-        copyBtn.style.background = '#10b981';
-        setTimeout(() => {
-          copyBtn.innerText = originalText;
-          copyBtn.style.background = '#333';
-        }, 2000);
-      });
-    });
-
-    input.addEventListener('input', updateLink);
-    timezoneSelect.addEventListener('change', updateLink);
-    [...checkboxes, ...sourceCheckboxes].forEach(cb => {
-      cb.addEventListener('change', (e) => {
-        const label = e.target.closest('.checkbox-label');
-        if (e.target.checked) label.classList.add('active');
-        else label.classList.remove('active');
-        updateLink();
-      });
-    });
-    
-    updateLink();
-  </script>
+  // ── Wiring ─────────────────────────────────────────────────────────────────
+  [...sportBoxes, ...sourceBoxes].forEach(cb => cb.addEventListener('change', () => { cb.closest('.opt').classList.toggle('on', cb.checked); update(); }));
+  teams.addEventListener('input', update);
+  tz.addEventListener('change', update);
+  directToggle.addEventListener('click', () => { directOnly = !directOnly; directToggle.classList.toggle('on', directOnly); update(); });
+  $$('.toolbar .btn-sm').forEach(b => b.addEventListener('click', () => {
+    const boxes = b.dataset.sel === 'sports' ? sportBoxes : sourceBoxes;
+    const mode = b.dataset.mode;
+    let ids = [];
+    if (mode === 'all') ids = boxes.map(cb => cb.value);
+    else if (mode === 'recommended') ids = SOURCES.filter(s => s.defaultEnabled).map(s => s.id);
+    else if (mode === 'direct') ids = SOURCES.filter(s => s.kind === 'direct').map(s => s.id);
+    setBoxes(boxes, ids); update();
+  }));
+  $('#copyBtn').addEventListener('click', async () => {
+    const btn = $('#copyBtn');
+    try { await navigator.clipboard.writeText(manifestUrl); btn.textContent = 'Copied!'; btn.classList.add('ok'); }
+    catch (_) { prompt('Copy this link:', manifestUrl); }
+    setTimeout(() => { btn.textContent = 'Copy link for Nuvio'; btn.classList.remove('ok'); }, 2000);
+  });
+  update();
+})();
+</script>
 </body>
-
 </html>

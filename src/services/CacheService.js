@@ -14,8 +14,8 @@ class CacheService {
     this.lastFetchTime = Date.now();
   }
 
-  isStale() {
-    return (Date.now() - this.lastFetchTime) > this.CACHE_TTL;
+  isStale(ttlMs = this.CACHE_TTL) {
+    return (Date.now() - this.lastFetchTime) > ttlMs;
   }
 }
 
