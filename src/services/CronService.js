@@ -7,6 +7,9 @@ const REVALIDATE_AFTER_MS = parseInt(process.env.CATALOG_REVALIDATE_MS, 10) || 3
 const SYNC_CRON = process.env.CATALOG_SYNC_CRON || '*/10 * * * *';
 // Manual refresh (/api/refresh) is rate limited to protect upstreams.
 const FORCE_MIN_INTERVAL_MS = 45 * 1000;
+// Prewarm cadence for live matches (stream tokens live ~4 min in the cache).
+const PREWARM_CRON = process.env.PREWARM_CRON || '*/3 * * * *';
+const PREWARM_MAX = parseInt(process.env.PREWARM_MAX, 10) || 8;
 
 class CronService {
   constructor({ matchAggregator, streamResolveCache, cacheService }) {
@@ -95,15 +98,17 @@ class CronService {
       }
     });
 
-    // Prewarm popular live matches - disabled for local home/tunnel hosting
-    // to prevent hammering upstream streaming sites and keep network silent.
-    // cron.schedule('*/3 * * * *', async () => {
-    //   try {
-    //     await this.prewarmPopular();
-    //   } catch (err) {
-    //     console.error('[CronService] Prewarm job failed:', err.message);
-    //   }
-    // });
+    // Prewarm live matches so the stream picker is instant. Set PREWARM_LIVE=false
+    // on tiny/home hosts to keep the network quiet.
+    if (process.env.PREWARM_LIVE !== 'false') {
+      cron.schedule(PREWARM_CRON, async () => {
+        try {
+          await this.prewarmPopular();
+        } catch (err) {
+          console.error('[CronService] Prewarm job failed:', err.message);
+        }
+      });
+    }
 
     // Run first sync immediately on boot
     const externalUrl = process.env.RENDER_EXTERNAL_URL;
@@ -147,10 +152,15 @@ class CronService {
       const { isMatchLive } = require('../catalog');
       const { prewarmMatch } = require('../streams');
       const matches = this.cacheService ? this.cacheService.getMatches() : [];
-      const hot = matches.filter(m => m.popular === '1' && isMatchLive(m));
+      const live = matches.filter(m => isMatchLive(m) && m.category !== 'networks');
+      // Popular first, then the rest; cap to keep upstream load and RAM bounded.
+      live.sort((a, b) => (b.popular === '1' ? 1 : 0) - (a.popular === '1' ? 1 : 0));
+      const hot = live.slice(0, PREWARM_MAX);
       if (hot.length === 0) return;
-      console.log(`[CronService] Prewarming ${Math.min(hot.length, 10)} popular live matches...`);
-      await Promise.allSettled(hot.slice(0, 10).map(m => prewarmMatch(m, null)));
+      console.log(`[CronService] Prewarming ${hot.length} live matches...`);
+      for (const m of hot) {
+        await prewarmMatch(m, null, 4);
+      }
     } catch (err) {
       console.error('[CronService] Prewarm failed:', err.message);
     }

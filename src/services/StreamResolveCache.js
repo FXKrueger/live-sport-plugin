@@ -14,7 +14,7 @@
 
 const DEFAULT_TTL_MS = 60 * 1000;
 const MIN_TTL_MS = 60 * 1000;
-const MAX_TTL_MS = 10 * 60 * 1000;
+const MAX_TTL_MS = 4 * 60 * 1000;
 const NEGATIVE_TTL_MS = 30 * 1000;
 const MAX_ENTRIES = 200;
 const CHANNEL_MATCH_ID = '__channel__'; // evergreen 24/7 keys survive pruneEnded

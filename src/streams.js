@@ -10,6 +10,10 @@ const { enabledSourceIds, priorityOf, labelOf, INTERNAL_SOURCE_IDS } = require('
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
+// How long a /stream request waits for slow sources before answering with
+// what is ready. Remaining sources finish in the background.
+const STREAM_DEADLINE_MS = parseInt(process.env.STREAM_DEADLINE_MS, 10) || 8000;
+
 // Which provider (container key) handles a given source id.
 const PROVIDER_KEYS = {
   streamfree: 'streamFreeProvider',
@@ -124,12 +128,70 @@ function getVerifyImpitClient() {
   return sharedVerifyImpit;
 }
 
+/** GET a text resource with the stream's headers. Returns { status, body }. */
+async function probeText(url, headers, timeoutMs) {
+  const impitClient = getVerifyImpitClient();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    try {
+      if (!impitClient) throw new Error('impit unavailable');
+      const r = await impitClient.fetch(url, { method: 'GET', headers, signal: controller.signal });
+      return { status: r.status, body: await r.text() };
+    } catch (_) {
+      const { request } = require('undici');
+      const r = await request(url, { method: 'GET', headers, headersTimeout: timeoutMs, bodyTimeout: timeoutMs, signal: controller.signal, dispatcher: getLaxDispatcher() });
+      return { status: r.statusCode, body: await r.body.text() };
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fetch only the first bytes of a media segment; returns the HTTP status. */
+async function probeSegment(url, headers, timeoutMs) {
+  const { request } = require('undici');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await request(url, {
+      method: 'GET',
+      headers: { ...headers, 'Range': 'bytes=0-4095' },
+      headersTimeout: timeoutMs, bodyTimeout: timeoutMs,
+      signal: controller.signal,
+      dispatcher: getLaxDispatcher()
+    });
+    // Read one chunk to confirm bytes actually flow, then drop the connection.
+    let gotBytes = false;
+    for await (const chunk of r.body) { if (chunk && chunk.length) { gotBytes = true; } break; }
+    try { r.body.destroy(); } catch (_) {}
+    return { status: r.statusCode, gotBytes };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function firstUri(body, baseUrl, { segments }) {
+  const lines = body.split('\n').map(l => l.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l || l.startsWith('#')) continue;
+    // In a media playlist a URI line follows #EXTINF; in a master it follows #EXT-X-STREAM-INF
+    const prev = lines.slice(Math.max(0, i - 3), i).join(' ');
+    if (segments && !prev.includes('#EXTINF')) continue;
+    if (!segments && !prev.includes('#EXT-X-STREAM-INF')) continue;
+    try { return new URL(l, baseUrl).toString(); } catch (_) { return null; }
+  }
+  return null;
+}
+
 /**
- * Ping each direct stream once and drop dead ones (404/403/5xx or a 200 body
- * without #EXT). Browser streams pass through untouched. Runs once per mint.
+ * Pre-flight each direct stream once and drop dead ones. Checks three levels:
+ * master playlist -> first variant playlist -> first media segment. A stream
+ * that only passes the master check is exactly the kind that "loads forever"
+ * in the player, so all three must succeed. Browser streams pass through.
  */
 async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
-  const impitClient = getVerifyImpitClient();
 
   const checked = await Promise.all(streams.map(async (s) => {
     if (!s.url || s.url.includes('/watch?')) return s;
@@ -154,39 +216,50 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
     if (referer) reqHeaders['Referer'] = referer;
     if (origin) reqHeaders['Origin'] = origin;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    const drop = (why) => {
+      console.log(`[Filter] Dropped ${why}: ${targetUrl.slice(0, 120)}`);
+      if (cacheKey) resolveCache.noteFailure(cacheKey);
+      return null;
+    };
+
+    // Level 1: playlist the player will request
     let status = 0;
     let body = '';
     try {
-      try {
-        if (!impitClient) throw new Error('impit unavailable');
-        const r = await impitClient.fetch(targetUrl, { method: 'GET', headers: reqHeaders, signal: controller.signal });
-        status = r.status;
-        body = await r.text();
-      } catch (impitErr) {
-        const { request } = require('undici');
-        const r = await request(targetUrl, { method: 'GET', headers: reqHeaders, headersTimeout: 4000, bodyTimeout: 4000, signal: controller.signal, dispatcher: getLaxDispatcher() });
-        status = r.statusCode;
-        body = await r.body.text();
-      }
+      ({ status, body } = await probeText(targetUrl, reqHeaders, 8000));
     } catch (err) {
-      clearTimeout(timer);
-      console.log(`[Filter] Dropped unreachable stream: ${targetUrl.slice(0, 120)} - ${err.message}`);
-      if (cacheKey) resolveCache.noteFailure(cacheKey);
-      return null;
+      return drop(`unreachable stream (${err.message})`);
     }
-    clearTimeout(timer);
+    if (status === 404 || status === 403 || status >= 500) return drop(`dead stream (${status})`);
+    if (!body.includes('#EXT')) return drop('non-M3U8 body');
 
-    if (status === 404 || status === 403 || status >= 500) {
-      console.log(`[Filter] Dropped dead stream (${status}): ${targetUrl.slice(0, 120)}`);
-      if (cacheKey) resolveCache.noteFailure(cacheKey);
-      return null;
+    // Level 2: variant playlist (masters only)
+    let mediaBody = body;
+    let mediaUrl = targetUrl;
+    if (body.includes('#EXT-X-STREAM-INF')) {
+      const variantUrl = firstUri(body, targetUrl, { segments: false });
+      if (variantUrl) {
+        try {
+          const v = await probeText(variantUrl, reqHeaders, 8000);
+          if (v.status >= 400 || !v.body.includes('#EXT')) return drop(`dead variant (${v.status})`);
+          mediaBody = v.body;
+          mediaUrl = variantUrl;
+        } catch (err) {
+          return drop(`unreachable variant (${err.message})`);
+        }
+      }
     }
-    if (!body.includes('#EXT')) {
-      console.log(`[Filter] Dropped non-M3U8 body: ${targetUrl.slice(0, 120)}`);
-      if (cacheKey) resolveCache.noteFailure(cacheKey);
-      return null;
+
+    // Level 3: first media segment must actually serve bytes
+    if (!mediaBody.includes('#EXTINF')) return drop('playlist without segments');
+    const segUrl = firstUri(mediaBody, mediaUrl, { segments: true });
+    if (segUrl) {
+      try {
+        const seg = await probeSegment(segUrl, reqHeaders, 8000);
+        if (seg.status >= 400 || !seg.gotBytes) return drop(`dead segment (${seg.status})`);
+      } catch (err) {
+        return drop(`unreachable segment (${err.message})`);
+      }
     }
 
     const parsed = m3u8Parser.parseManifestText(body);
@@ -211,7 +284,7 @@ async function mintVerifiedSources(src, match, config, cacheKey) {
 
 // ─── Prewarm ─────────────────────────────────────────────────────────────────
 
-async function prewarmMatch(match, config, topN = 3) {
+async function prewarmMatch(match, config, topN = 8) {
   try {
     if (!match || !match.sources || !match.sources.length) return;
     const resolveCache = container.resolve('streamResolveCache');
@@ -320,12 +393,22 @@ async function handleStream(type, id, config) {
   const activeSources = selectSources(match.sources, config);
   const streams = [];
 
-  const results = await Promise.allSettled(activeSources.map(async (src) => {
+  // Every source resolves in parallel, but the response is sent after
+  // STREAM_DEADLINE_MS with whatever finished so far. Slow sources keep
+  // resolving in the background (single-flight cache) and show up on the
+  // next request, which the short cacheMaxAge below triggers quickly.
+  let partial = false;
+  const deadline = new Promise((resolve) => setTimeout(() => resolve('__deadline__'), STREAM_DEADLINE_MS));
+  const results = await Promise.all(activeSources.map(async (src) => {
     const key = `${src.source}:${matchId}:${src.id}`;
-    const minted = await resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, config, key));
-    return minted.map((s) => ({ ...s, _cacheKey: key }));
+    const work = resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, config, key))
+      .then((minted) => minted.map((s) => ({ ...s, _cacheKey: key })))
+      .catch(() => []);
+    const out = await Promise.race([work, deadline]);
+    if (out === '__deadline__') { partial = true; work.catch(() => {}); return []; }
+    return out;
   }));
-  for (const r of results) if (r.status === 'fulfilled' && Array.isArray(r.value)) streams.push(...r.value);
+  for (const r of results) if (Array.isArray(r)) streams.push(...r);
 
   // 24/7 cricket networks from StreamFree, when enabled
   const enabled = enabledSourceIds(config);
@@ -366,7 +449,9 @@ async function handleStream(type, id, config) {
   // Strip internal fields before they reach the client
   out = out.map(({ _source, _cacheKey, score, resolution, bitrate, quality, ...rest }) => rest);
 
-  return { streams: out, cacheMaxAge: 30, staleRevalidate: 30, staleError: 120 };
+  return partial
+    ? { streams: out, partial: true, cacheMaxAge: 5, staleRevalidate: 5, staleError: 30 }
+    : { streams: out, cacheMaxAge: 30, staleRevalidate: 30, staleError: 120 };
 }
 
 module.exports = { handleStream, prewarmMatch, selectSources };

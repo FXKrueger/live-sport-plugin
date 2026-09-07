@@ -211,29 +211,47 @@
   function showLoader(text) { loader.style.display = 'flex'; $('#loaderText').textContent = text; }
   function hideLoader() { loader.style.display = 'none'; }
 
+  let openToken = 0;
   async function openMatch(m) {
+    const token = ++openToken;
     overlay.classList.add('open');
     $('#ovTitle').textContent = m.name;
     $('#streamList').innerHTML = '';
-    showLoader('Resolving streams… this can take up to 20 s');
-    try {
-      const data = await (await fetch(`/stream/tv/${m.id}.json`, { cache: 'no-store' })).json();
+    showLoader('Resolving streams…');
+    const seen = new Set();
+    let autoPlayed = false;
+    let attempts = 0;
+    const list = $('#streamList');
+    const note = document.createElement('div');
+    note.className = 'meta'; note.style.padding = '4px 2px 10px';
+    list.appendChild(note);
+
+    while (token === openToken && attempts < 5) {
+      attempts++;
+      let data;
+      try { data = await (await fetch(`/stream/tv/${m.id}.json`, { cache: 'no-store' })).json(); }
+      catch (e) { showLoader('Failed to resolve streams.'); return; }
       const streams = data.streams || [];
-      if (!streams.length) { showLoader('No streams available right now. Try again in a minute.'); return; }
-      const list = $('#streamList');
-      streams.forEach((s, i) => {
+      streams.forEach((s) => {
+        const key = s.url || s.externalUrl || s.title;
+        if (seen.has(key)) return;
+        seen.add(key);
         const el = document.createElement('div');
         el.className = 'stream';
         const direct = !!s.url;
         el.innerHTML = `<span class="k ${direct ? 'direct' : 'web'}">${direct ? 'DIRECT' : 'BROWSER'}</span>\n${s.title || s.name}`;
         el.onclick = () => play(s, el);
         list.appendChild(el);
-        if (i === 0 && direct) play(s, el);
+        if (!autoPlayed && direct) { autoPlayed = true; play(s, el); }
       });
-      if (!streams[0].url) showLoader('Only browser streams available. Pick one on the right.');
-    } catch (e) {
-      showLoader('Failed to resolve streams.');
+      if (!data.partial) { note.textContent = seen.size ? `${seen.size} stream${seen.size === 1 ? '' : 's'}` : ''; break; }
+      note.textContent = `${seen.size} ready · more sources still resolving…`;
+      if (!autoPlayed) showLoader(seen.size ? 'Only browser streams so far. Waiting for direct sources…' : 'Still resolving sources…');
+      await new Promise(r => setTimeout(r, 4000));
     }
+    if (token !== openToken) return;
+    if (!seen.size) showLoader('No streams available right now. Try again in a minute.');
+    else if (!autoPlayed) showLoader('Only browser streams available. Pick one on the right.');
   }
 
   function play(s, el) {
@@ -256,6 +274,7 @@
   }
 
   function closePlayer() {
+    openToken++;
     overlay.classList.remove('open');
     video.pause(); video.removeAttribute('src'); video.load();
     if (hls) { hls.destroy(); hls = null; }

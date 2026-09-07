@@ -133,6 +133,9 @@ pm2 startup
 | `CATALOG_SYNC_CRON` | `*/10 * * * *` | full provider re-sync schedule |
 | `CATALOG_REVALIDATE_MS` | `180000` | catalog age after which the next request triggers a background re-sync |
 | `LOW_MEMORY_MODE` | unset | `true` = fetch providers sequentially (256 MB hosts) |
+| `STREAM_DEADLINE_MS` | `8000` | a `/stream` request answers after this with the sources that are ready; the rest keep resolving in the background |
+| `PREWARM_LIVE` / `PREWARM_CRON` / `PREWARM_MAX` | `true` / `*/3 * * * *` / `8` | pre-resolve streams for live matches so the picker opens instantly |
+| `RELAY_SEGMENTS` | `false` | `true` = also proxy media segments through the server (fixes CDNs that bind tokens to the server IP; costs bandwidth) |
 
 ### Useful endpoints
 

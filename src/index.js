@@ -191,7 +191,12 @@ app.get('/img', async (req, res) => {
 // binding depends on all three). Only bodies that passed the #EXT validation
 // are cached. No HTTP Cache-Control is set - players must never cache live
 // manifests client-side.
+const PROXY_EMBED_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 const MANIFEST_TTL_MS = 3000;
+// RELAY_SEGMENTS=true routes media segments through this server as well.
+// Needed when a CDN binds the stream token to the IP that minted it (the
+// server), so the player's own IP gets 403/timeouts. Costs server bandwidth.
+const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS === 'true';
 const MANIFEST_CACHE_MAX = 100;
 const MANIFEST_NEGATIVE_TTL_MS = 15 * 1000;
 const manifestCache = new Map();      // key -> { body, expiresAt, lastAccess }
@@ -340,10 +345,23 @@ app.get('/api/manifest', async (req, res) => {
             return `/api/manifest?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}`;
           }
 
+          if (RELAY_SEGMENTS) {
+            return `/api/segment?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}`;
+          }
           if ((absoluteUrl.includes('.image') || absoluteUrl.includes('.js')) && !absoluteUrl.includes('.ts') && !absoluteUrl.includes('.m3u8')) {
             absoluteUrl += '#.ts';
           }
           return absoluteUrl;
+        }).map(line => {
+          // Encryption keys must be fetched with the same headers as segments.
+          if (RELAY_SEGMENTS && line.startsWith('#EXT-X-KEY') && line.includes('URI="')) {
+            return line.replace(/URI="([^"]+)"/, (_, u) => {
+              let abs = u;
+              try { abs = new URL(u, targetUrl).toString(); } catch (_) {}
+              return `URI="/api/segment?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}"`;
+            });
+          }
+          return line;
         });
 
         const rewrittenResult = rewritten.join('\n');
@@ -373,6 +391,36 @@ app.get('/api/manifest', async (req, res) => {
   }
 });
 
+// ─── /api/segment — media segment relay (only used when RELAY_SEGMENTS=true) ──
+let segmentDispatcher = null;
+app.get('/api/segment', async (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl || !/^https?:\/\//.test(targetUrl)) return res.status(400).send('Missing url');
+  const referer = req.query.referer || '';
+  const origin = req.query.origin || '';
+  const headers = { 'User-Agent': PROXY_EMBED_UA, 'Accept': '*/*' };
+  if (referer) headers['Referer'] = referer;
+  if (origin) headers['Origin'] = origin;
+  if (req.headers.range) headers['Range'] = req.headers.range;
+  try {
+    const { request, Agent } = require('undici');
+    if (!segmentDispatcher) segmentDispatcher = new Agent({ connect: { rejectUnauthorized: false }, keepAliveTimeout: 15000, pipelining: 1 });
+    const upstream = await request(targetUrl, { headers, dispatcher: segmentDispatcher, headersTimeout: 10000, bodyTimeout: 20000 });
+    res.status(upstream.statusCode);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
+    const ct = upstream.headers['content-type'];
+    res.setHeader('Content-Type', ct && !String(ct).includes('text/html') ? ct : 'video/mp2t');
+    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+    if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
+    upstream.body.on('error', () => { try { res.destroy(); } catch (_) {} });
+    req.on('close', () => { try { upstream.body.destroy(); } catch (_) {} });
+    upstream.body.pipe(res);
+  } catch (err) {
+    if (!res.headersSent) res.status(502).send('Segment relay error: ' + err.message);
+  }
+});
+
 // ─── /api/proxy-embed — CORS-safe embed HTML fetcher (SSRF-protected) ────────
 // Fetches the HTML of a sports embed page on behalf of the client browser.
 // The browser cannot fetch embedindia.st directly (CORS), but this endpoint
@@ -394,8 +442,6 @@ const ALLOWED_EMBED_DOMAINS = new Set([
   'viprow.me',
   'vipbox.lc',
 ]);
-
-const PROXY_EMBED_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
 app.get('/api/proxy-embed', async (req, res) => {
   const rawUrl = req.query.url;
