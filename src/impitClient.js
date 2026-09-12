@@ -54,25 +54,32 @@ async function safeFetch(url, opts = {}) {
   const impit = getImpit();
 
   // -- Path A: impit ---------------------------------------------------------
+    // -- Path A: impit ---------------------------------------------------------
   if (impit) {
-    try {
-      const res = await Promise.race([
-        impit.fetch(url, { method, headers, body }),
-        new Promise((_, rej) =>
-          setTimeout(() => rej(new Error(`impit timeout ${timeoutMs}ms`)), timeoutMs)
-        ),
-      ]);
-      const textData = await res.text();
-      return {
-        ok: res.status >= 200 && res.status < 300,
-        status: res.status,
-        text: async () => textData,
-        json: async () => JSON.parse(textData),
-      };
-    } catch (impitErr) {
-      // Transient error - fall through to undici without marking impit broken
-      console.warn(`[impitClient] impit fetch failed (${impitErr.message}), falling back to undici for: ${url}`);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await Promise.race([
+          impit.fetch(url, { method, headers, body }),
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error(`impit timeout ${timeoutMs}ms`)), timeoutMs)
+          ),
+        ]);
+        const textData = await res.text();
+        return {
+          ok: res.status >= 200 && res.status < 300,
+          status: res.status,
+          text: async () => textData,
+          json: async () => JSON.parse(textData),
+        };
+      } catch (impitErr) {
+        lastErr = impitErr;
+        if (attempt < 3) {
+           await new Promise(r => setTimeout(r, 800 * attempt));
+        }
+      }
     }
+    console.warn(`[impitClient] impit fetch failed after 3 retries (${lastErr.message}), falling back to undici for: ${url}`);
   }
 
   // -- Path B: undici --------------------------------------------------------

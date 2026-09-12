@@ -130,11 +130,38 @@ global.fetch = async (url, opts) => {
       reqHeaders.set('Origin', targetOrigin);
       reqHeaders.set('Content-Type', 'application/octet-stream');
       
-      const response = await originalFetch(proxyUrl, {
-          method: fetchOpts.method || 'POST',
-          headers: reqHeaders,
-          body: reqBody ? Buffer.from(reqBody) : undefined
-      });
+      let response;
+      let impit = null;
+      try {
+        const { Impit } = require('impit');
+        impit = new Impit();
+      } catch (e) {
+        console.warn("[WASM] impit native addon not found, using originalFetch.");
+      }
+      const headersObj = {};
+      reqHeaders.forEach((v, k) => { headersObj[k] = v; });
+
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          if (impit) {
+            response = await impit.fetch(proxyUrl, {
+                method: fetchOpts.method || 'POST',
+                headers: headersObj,
+                body: reqBody ? Buffer.from(reqBody) : undefined
+            });
+          } else {
+            response = await originalFetch(proxyUrl, {
+                method: fetchOpts.method || 'POST',
+                headers: reqHeaders,
+                body: reqBody ? Buffer.from(reqBody) : undefined
+            });
+          }
+          break;
+        } catch (e) {
+          if (attempt === 5) throw e;
+          await new Promise(r => setTimeout(r, 800 * attempt));
+        }
+      }
       
       if (!response.ok) {
           console.error(`[WASM] Proxy fetch failed: ${response.status} ${response.statusText}`);
