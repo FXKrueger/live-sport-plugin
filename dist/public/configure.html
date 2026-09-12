@@ -440,7 +440,12 @@
       const teams = input.value.trim();
       const selectedSports = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
       const selectedSources = Array.from(sourceCheckboxes).filter(cb => cb.checked).map(cb => cb.value);
-      const tz = timezoneSelect.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      let tz = timezoneSelect.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      } catch (e) {
+        tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      }
 
       let manifestUrl = window.location.origin + '/manifest.json';
 
