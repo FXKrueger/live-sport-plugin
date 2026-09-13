@@ -235,7 +235,7 @@ app.get('/api/manifest', async (req, res) => {
     let fetchPromise = manifestInFlight.get(cacheKey);
     if (!fetchPromise) {
       fetchPromise = (async () => {
-        const out = await fetchUpstreamManifest(targetUrl, referer, origin);
+        let out = await fetchUpstreamManifest(targetUrl, referer, origin);
         if (!out.includes('#EXT')) {
           console.error('[ManifestProxy] Upstream returned non-m3u8 body for', targetUrl);
           throw new Error('Upstream returned non-m3u8 body');
@@ -254,11 +254,23 @@ app.get('/api/manifest', async (req, res) => {
           // Fallback to default TTL on parse error
         }
 
+        const isLive = !out.includes('#EXT-X-ENDLIST');
+        let injectedStart = out.includes('#EXT-X-START');
+
         // Rewrite the manifest
         const lines = out.split('\n');
         const rewritten = lines.map(line => {
           const l = line.trim();
-          if (!l || l.startsWith('#')) return line;
+
+          let resultLine = line;
+
+          if (isLive && !injectedStart && (l === '#EXTM3U' || l.startsWith('#EXT-X-VERSION'))) {
+            const carriageReturn = line.endsWith('\r') ? '\r' : '';
+            resultLine = `${line}\n#EXT-X-START:TIME-OFFSET=-15${carriageReturn}`;
+            injectedStart = true;
+          }
+
+          if (!l || l.startsWith('#')) return resultLine;
 
           let absoluteUrl = l;
           try {
