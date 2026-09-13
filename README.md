@@ -20,7 +20,11 @@
 > - **Content Scope:** This addon exclusively indexes public live sports fixtures. The official repository does not distribute or endorse adult content, shock media, or paid pirated IPTV bundles.
 > - **Official Support:** The only official repository is [github.com/rajhodedara/live-sport-plugin](https://github.com/rajhodedara/live-sport-plugin). Voluntary community support is solely via [Ko-fi](https://ko-fi.com/rajodedara).
 
-> ☕ **Enjoying Nuvio Live Sports?** Consider [supporting the project on Ko-fi](https://ko-fi.com/rajodedara) to help cover maintenance, dedicated scrapers, and infrastructure!
+> ☕ **Enjoying Nuvio Live Sports?** Help keep the public instance alive and cover server maintenance!
+> - **Credit/Debit/PayPal:** [Support on Ko-fi](https://ko-fi.com/rajodedara)
+> - **Ethereum / Polygon (EVM):** `0x619eA99F0D725BEE8e0CFe9552d5F4099d15724c`
+> - **Solana (SOL):** `CmuehW4PQn4yyQeXqguEpR3DjXwPPdS9Qqo4W5aWN8UU`
+> - **Bitcoin (BTC):** `bc1q9dd4nflxx8ja0vzy2phzsf8h9tr6590txgd07u`
 
 A production-grade live sports streaming add-on for [Nuvio](https://nuvio.tv) and [Stremio](https://www.stremio.com/). It serves as a powerful multi-source aggregator that provides native live sports streams (Football, Basketball, Motorsport, Cricket, and more) inside your client, utilizing an advanced internal stream resolver to bypass CORS restrictions.
 

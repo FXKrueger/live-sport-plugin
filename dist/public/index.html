@@ -75,10 +75,10 @@
       <span>Nuvio Live Sports</span>
     </div>
     <div class="header-actions">
-      <a href="https://ko-fi.com/rajodedara" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 94, 91, 0.15); border: 1px solid rgba(255, 94, 91, 0.3); color: #FF5E5B; padding: 8px 16px; border-radius: 30px; text-decoration: none; font-weight: 700; font-size: 13px; transition: all 0.2s;">
+      <button onclick="document.getElementById('donate-modal').style.display='flex'" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 94, 91, 0.15); border: 1px solid rgba(255, 94, 91, 0.3); color: #FF5E5B; padding: 8px 16px; border-radius: 30px; text-decoration: none; font-weight: 700; font-size: 13px; cursor: pointer; transition: all 0.2s;">
         <svg height="14" viewBox="0 0 24 24" width="14" fill="currentColor"><path d="M23.881 8.948c-.773-4.085-4.859-4.593-4.859-4.593H.723c-.604 0-.679.798-.679.798s-.082 7.324-.022 11.822c.164 2.424 2.586 2.672 2.586 2.672s8.267-.023 11.966-.049c2.438-.426 2.683-2.566 2.658-3.734 4.352.24 7.422-2.831 6.649-6.916zm-11.062 3.511c-1.246 1.453-4.011 3.976-4.011 3.976s-.121.119-.31.023c-.076-.057-.108-.09-.108-.09-.443-.441-3.368-3.049-4.034-3.954-.709-.966-1.041-2.7-.091-3.71.951-1.01 3.005-1.086 4.363.407 0 0 1.565-1.782 3.468-.966 1.909.822 1.838 3.197.723 4.314z"/></svg>
-        Tip on Ko-fi
-      </a>
+        Donate ❤️
+      </button>
       <a href="https://github.com/rajhodedara/live-sport-plugin" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: #fff; padding: 8px 16px; border-radius: 30px; text-decoration: none; font-weight: 700; font-size: 13px; transition: all 0.2s;">
         <svg height="14" viewBox="0 0 16 16" width="14" fill="currentColor"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
         GitHub
@@ -86,6 +86,48 @@
       <a href="/configure" style="background: var(--accent); color: white; padding: 10px 20px; border-radius: 30px; text-decoration: none; font-weight: 700; font-family: 'Outfit', sans-serif; transition: all 0.2s; box-shadow: 0 4px 15px var(--accent-glow);">Configure Plugin</a>
     </div>
   </header>
+
+  <!-- Donation Modal -->
+  <div id="donate-modal" onclick="if(event.target===this)this.style.display='none'" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); backdrop-filter:blur(12px); z-index:200; align-items:center; justify-content:center; padding:20px;">
+    <div style="background:#111; border:1px solid rgba(255,95,95,0.25); border-radius:20px; padding:28px; width:100%; max-width:420px; max-height:90vh; overflow-y:auto; position:relative;">
+      <button onclick="document.getElementById('donate-modal').style.display='none'" style="position:absolute; top:14px; right:14px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); color:#fff; padding:6px 14px; border-radius:20px; cursor:pointer; font-size:13px; font-weight:600;">✕ Close</button>
+
+      <p style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:#fff; text-align:center;">❤️ Donation Center</p>
+      <p style="margin:0 0 18px 0; font-size:12px; color:var(--text-muted); text-align:center; line-height:1.6;">Help keep the public server and scrapers alive!</p>
+
+      <!-- Ko-fi -->
+      <a href="https://ko-fi.com/rajodedara" target="_blank" rel="noopener noreferrer" style="display:inline-flex; align-items:center; justify-content:center; gap:8px; background:#FF5E5B; color:white; padding:13px 20px; border-radius:30px; text-decoration:none; font-weight:700; font-size:14px; box-shadow:0 4px 12px rgba(255,94,91,0.35); width:100%; box-sizing:border-box; margin-bottom:16px;">
+        <svg height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M23.881 8.948c-.773-4.085-4.859-4.593-4.859-4.593H.723c-.604 0-.679.798-.679.798s-.082 7.324-.022 11.822c.164 2.424 2.586 2.672 2.586 2.672s8.267-.023 11.966-.049c2.438-.426 2.683-2.566 2.658-3.734 4.352.24 7.422-2.831 6.649-6.916zm-11.062 3.511c-1.246 1.453-4.011 3.976-4.011 3.976s-.121.119-.31.023c-.076-.057-.108-.09-.108-.09-.443-.441-3.368-3.049-4.034-3.954-.709-.966-1.041-2.7-.091-3.71.951-1.01 3.005-1.086 4.363.407 0 0 1.565-1.782 3.468-.966 1.909.822 1.838 3.197.723 4.314z"/></svg>
+        Support on Ko-fi (Card / PayPal)
+      </a>
+
+      <!-- Divider -->
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+        <div style="flex:1; height:1px; background:rgba(255,255,255,0.08);"></div>
+        <span style="font-size:11px; color:var(--text-muted); white-space:nowrap;">or send crypto</span>
+        <div style="flex:1; height:1px; background:rgba(255,255,255,0.08);"></div>
+      </div>
+
+      <!-- Crypto -->
+      <div style="display:grid; grid-template-columns:1fr; gap:8px; font-size:12px; color:var(--text-muted);">
+        <div style="background:rgba(0,0,0,0.4); padding:12px; border-radius:10px; text-align:center;">
+          <img src="/Ethereum.png" alt="ETH QR" style="width:90px; height:90px; border-radius:8px; margin-bottom:8px; border:2px solid rgba(255,255,255,0.1);">
+          <div style="margin-bottom:4px; font-weight:600; color:#fff;">ETH / Polygon / Arbitrum / Base</div>
+          <div style="font-family:monospace; user-select:all; color:#ccc; word-break:break-all;">0x619eA99F0D725BEE8e0CFe9552d5F4099d15724c</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.4); padding:12px; border-radius:10px; text-align:center;">
+          <img src="/solana.png" alt="SOL QR" style="width:90px; height:90px; border-radius:8px; margin-bottom:8px; border:2px solid rgba(255,255,255,0.1);">
+          <div style="margin-bottom:4px; font-weight:600; color:#fff;">Solana (SOL)</div>
+          <div style="font-family:monospace; user-select:all; color:#ccc; word-break:break-all;">CmuehW4PQn4yyQeXqguEpR3DjXwPPdS9Qqo4W5aWN8UU</div>
+        </div>
+        <div style="background:rgba(0,0,0,0.4); padding:12px; border-radius:10px; text-align:center;">
+          <img src="/bitcoin.png" alt="BTC QR" style="width:90px; height:90px; border-radius:8px; margin-bottom:8px; border:2px solid rgba(255,255,255,0.1);">
+          <div style="margin-bottom:4px; font-weight:600; color:#fff;">Bitcoin (BTC)</div>
+          <div style="font-family:monospace; user-select:all; color:#ccc; word-break:break-all;">bc1q9dd4nflxx8ja0vzy2phzsf8h9tr6590txgd07u</div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <main>
     <div style="display: flex; gap: 15px; margin-bottom: 30px; align-items: center; flex-wrap: wrap;">
