@@ -12,8 +12,13 @@ const { enabledSourceIds, priorityOf, labelOf, INTERNAL_SOURCE_IDS } = require('
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
 // How long a /stream request waits for slow sources before answering with
-// what is ready. Remaining sources finish in the background.
-const STREAM_DEADLINE_MS = parseInt(process.env.STREAM_DEADLINE_MS, 10) || 8000;
+// what is ready. Remaining sources finish in the background. If nothing is
+// ready at the deadline the request keeps waiting for the first result up to
+// STREAM_HARD_DEADLINE_MS so the user never sees an empty list on first open.
+const STREAM_DEADLINE_MS = parseInt(process.env.STREAM_DEADLINE_MS, 10) || 10000;
+const STREAM_HARD_DEADLINE_MS = parseInt(process.env.STREAM_HARD_DEADLINE_MS, 10) || 25000;
+const VERIFY_MAX_PER_SOURCE = 8;
+const VERIFY_CONCURRENCY = 3;
 
 // Which provider (container key) handles a given source id.
 const PROVIDER_KEYS = {
@@ -219,7 +224,25 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match)
   // match with no stream yet is not the source's fault.
   let matchIsLive = true;
   try { if (match && match.date) matchIsLive = require('./catalog').isMatchLive(match); } catch (_) {}
-  const checked = await Promise.all(streams.map(async (s) => {
+  // Providers often return the same upstream several times (mirrors of one
+  // channel). Probe each upstream once and cap the batch so one source cannot
+  // fire 15 probes at a CDN that then throttles all of them into timeouts.
+  const seenUp = new Set();
+  const unique = [];
+  for (const s of streams) {
+    if (!s.url || s.url.includes('/watch?')) { unique.push(s); continue; }
+    let k = s.url;
+    try { if (k.includes('/api/manifest')) k = new URL(k, 'http://localhost').searchParams.get('url') || k; } catch (_) {}
+    k = k.replace(/\/secure\/[^/]+\//, '/secure/_/').replace(/[?&](_t|_e|_n|token|gid)=[^&]*/g, '');
+    if (seenUp.has(k)) continue;
+    seenUp.add(k);
+    unique.push(s);
+  }
+  const direct = unique.filter(s => s.url && !s.url.includes('/watch?')).slice(0, VERIFY_MAX_PER_SOURCE);
+  const web = unique.filter(s => !s.url || s.url.includes('/watch?'));
+
+  let cursor = 0;
+  const verifyOne = async (s) => {
     if (!s.url || s.url.includes('/watch?')) return s;
 
     let targetUrl = s.url;
@@ -274,15 +297,14 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match)
       if (variantUrl) {
         try {
           const v = await probeText(variantUrl, reqHeaders, 8000);
-          if (v.status === 404) return drop('dead variant (404)');
           if (v.status < 400 && v.body.includes('#EXT')) {
             mediaBody = v.body;
             mediaUrl = variantUrl;
           } else {
-            s._mode = 'raw';
+            return drop(`dead variant (${v.status})`);
           }
-        } catch (_) {
-          s._mode = 'raw';
+        } catch (err) {
+          return drop(`unreachable variant (${err.message})`);
         }
       }
     }
@@ -293,14 +315,19 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match)
       if (!mediaBody.includes('#EXTINF')) return drop('playlist without segments');
       const segUrl = firstUri(mediaBody, mediaUrl, { segments: true });
       if (segUrl) {
-        try {
-          const seg = await probeSegment(segUrl, reqHeaders, 8000);
-          if (seg.status === 404) return drop('dead segment (404)');
-          if (seg.status >= 400 && seg.status !== 416) s._mode = 'direct-segments';
-          else if (seg.status < 400 && !seg.gotBytes) s._mode = 'direct-segments';
-        } catch (_) {
-          s._mode = 'direct-segments';
+        // Two attempts: live edges occasionally 5xx on the newest segment.
+        let segOk = false, segWhy = '';
+        for (let attempt = 0; attempt < 2 && !segOk; attempt++) {
+          try {
+            const seg = await probeSegment(segUrl, reqHeaders, 8000);
+            if (seg.status === 416 || (seg.status < 400 && seg.gotBytes)) segOk = true;
+            else segWhy = `segment ${seg.status}${seg.status < 400 ? ' (no bytes)' : ''}`;
+          } catch (err) {
+            segWhy = `segment ${err.message}`;
+          }
+          if (!segOk && attempt === 0) await new Promise(r => setTimeout(r, 700));
         }
+        if (!segOk) return drop(`dead ${segWhy}`);
       }
     }
     if (s._mode !== 'relay') console.log(`[Filter] ${s._source} kept in ${s._mode} mode: ${targetUrl.slice(0, 100)}`);
@@ -315,9 +342,17 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match)
     if (matchIsLive) health.noteVerify(s._source, s._mode === 'relay');
     health.remember({ source: s._source, key: cacheKey, live: matchIsLive, outcome: 'ok', mode: s._mode, host: hostOf(targetUrl), quality: s.resolution || s.quality || '' });
     return s;
-  }));
+  };
 
-  return checked.filter(Boolean);
+  const results = new Array(direct.length).fill(null);
+  const workers = Array.from({ length: Math.min(VERIFY_CONCURRENCY, direct.length) }, async () => {
+    while (cursor < direct.length) {
+      const i = cursor++;
+      try { results[i] = await verifyOne(direct[i]); } catch (_) { results[i] = null; }
+    }
+  });
+  await Promise.all(workers);
+  return [...results.filter(Boolean), ...web];
 }
 
 async function mintVerifiedSources(src, match, config, cacheKey) {
@@ -517,17 +552,24 @@ async function handleStream(type, id, config) {
   // resolving in the background (single-flight cache) and show up on the
   // next request, which the short cacheMaxAge below triggers quickly.
   let partial = false;
-  const deadline = new Promise((resolve) => setTimeout(() => resolve('__deadline__'), STREAM_DEADLINE_MS));
-  const results = await Promise.all(activeSources.map(async (src) => {
+  const works = activeSources.map((src) => {
     const key = `${src.source}:${matchId}:${src.id}`;
     const work = resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, config, key))
       .then((minted) => minted.map((s, i) => ({ ...s, _cacheKey: key, _idx: i })))
       .catch(() => []);
-    const out = await Promise.race([work, deadline]);
-    if (out === '__deadline__') { partial = true; work.catch(() => {}); return []; }
-    return out;
-  }));
-  for (const r of results) if (Array.isArray(r)) streams.push(...r);
+    return { work, done: false, value: [] };
+  });
+  works.forEach(w => w.work.then(v => { w.done = true; w.value = v; }));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const started = Date.now();
+  const allDone = () => works.every(w => w.done);
+  const anyStream = () => works.some(w => w.done && w.value.length > 0);
+  await Promise.race([Promise.all(works.map(w => w.work)), sleep(STREAM_DEADLINE_MS)]);
+  while (!allDone() && !anyStream() && Date.now() - started < STREAM_HARD_DEADLINE_MS) {
+    await Promise.race([Promise.all(works.map(w => w.work)), sleep(500)]);
+  }
+  partial = !allDone();
+  for (const w of works) if (w.done) streams.push(...w.value);
 
   // 24/7 cricket networks from StreamFree, when enabled
   const enabled = enabledSourceIds(config);
