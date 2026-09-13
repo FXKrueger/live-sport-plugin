@@ -39,6 +39,12 @@ class StreamFreeProvider extends BaseProvider {
     );
   }
 
+  normalizeCategory(cat) {
+    let norm = String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (norm === 'football') return 'american_football';
+    return super.normalizeCategory(cat);
+  }
+
   async getMatches() {
     const matches = [];
     try {
