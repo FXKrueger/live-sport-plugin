@@ -77,6 +77,26 @@ process.on('exit', shutdownResolver);
 process.on('SIGINT', () => { shutdownResolver(); process.exit(0); });
 process.on('SIGTERM', () => { shutdownResolver(); process.exit(0); });
 
+// ─── Crash guards ─────────────────────────────────────────────────────────────
+// Node exits on an unhandled rejection by default; on a PaaS that shows up as
+// a silent restart loop. Log, remember for /api/status, keep serving.
+const processState = { startedAt: Date.now(), lastError: null, errorCount: 0, signals: [] };
+process.on('uncaughtException', (err) => {
+  processState.errorCount++;
+  processState.lastError = { at: new Date().toISOString(), kind: 'uncaughtException', message: err && err.message, stack: err && err.stack && err.stack.split('\n').slice(0, 4).join(' | ') };
+  console.error('[FATAL-GUARD] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  processState.errorCount++;
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  processState.lastError = { at: new Date().toISOString(), kind: 'unhandledRejection', message: err.message, stack: err.stack && err.stack.split('\n').slice(0, 4).join(' | ') };
+  console.error('[FATAL-GUARD] unhandledRejection:', err);
+});
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(sig, () => { processState.signals.push({ at: new Date().toISOString(), sig }); console.warn(`[process] received ${sig}`); });
+}
+module.exports.processState = processState;
+
 // ─── Register Addon Handlers ──────────────────────────────────────────────────
 
 builder.defineCatalogHandler(({ type, id, extra, config }) => handleCatalog(type, id, extra, config));
@@ -142,6 +162,7 @@ app.get('/api/status', (_, res) => {
     hlsGateway: gateway,
     env: { relaySegments: process.env.RELAY_SEGMENTS === 'true', baseUrl: BASE_URL, region: process.env.RENDER_REGION || null },
     memory: (() => { const m = process.memoryUsage(); return { rssMb: Math.round(m.rss / 1048576), heapMb: Math.round(m.heapUsed / 1048576) }; })(),
+    process: { startedAt: new Date(processState.startedAt).toISOString(), lastError: processState.lastError, errorCount: processState.errorCount, signals: processState.signals.slice(-5), node: process.version },
     breakers: breakers.filter(b => b.open || b.halfOpen)
   });
 });

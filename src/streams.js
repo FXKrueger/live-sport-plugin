@@ -315,6 +315,10 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match)
       if (!mediaBody.includes('#EXTINF')) return drop('playlist without segments');
       const segUrl = firstUri(mediaBody, mediaUrl, { segments: true });
       if (segUrl) {
+        // The segment path identifies the actual feed: several aggregators
+        // (Streamed, NTV, PPV, ...) often hand out the very same upstream feed
+        // under different playlist hosts. Used to de-duplicate the picker.
+        try { const su = new URL(segUrl); s._sig = su.host + su.pathname; } catch (_) {}
         // Two attempts: live edges occasionally 5xx on the newest segment.
         let segOk = false, segWhy = '';
         for (let attempt = 0; attempt < 2 && !segOk; attempt++) {
@@ -521,10 +525,14 @@ function decorateStream(s, match) {
   return s;
 }
 
-/** Drop exact duplicate targets (same upstream m3u8 or same external page). */
+/** Drop duplicate feeds (same first segment, same upstream m3u8 or same external page). */
 function dedupeStreams(streams) {
   const seen = new Set();
   return streams.filter(s => {
+    if (s._sig) {
+      if (seen.has('sig:' + s._sig)) return false;
+      seen.add('sig:' + s._sig);
+    }
     let key = s.url || s.externalUrl || '';
     try {
       if (key.includes('/api/manifest')) key = new URL(key, 'http://localhost').searchParams.get('url') || key;
@@ -631,7 +639,7 @@ async function handleStream(type, id, config) {
   out = [...direct, ...web];
 
   // Strip internal fields before they reach the client
-  out = out.map(({ _source, _cacheKey, _idx, _mode, score, resolution, bitrate, quality, ...rest }) => rest);
+  out = out.map(({ _source, _cacheKey, _idx, _mode, _sig, score, resolution, bitrate, quality, ...rest }) => rest);
 
   return partial
     ? { streams: out, partial: true, cacheMaxAge: 5, staleRevalidate: 5, staleError: 30 }
