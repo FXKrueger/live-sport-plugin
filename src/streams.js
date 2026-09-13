@@ -6,6 +6,7 @@
  */
 
 const container = require('./container');
+const HlsGateway = require('./services/HlsGateway');
 const { enabledSourceIds, priorityOf, labelOf, INTERNAL_SOURCE_IDS } = require('./sources');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
@@ -216,9 +217,11 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
     if (referer) reqHeaders['Referer'] = referer;
     if (origin) reqHeaders['Origin'] = origin;
 
+    const health = container.resolve('sourceHealth');
     const drop = (why) => {
       console.log(`[Filter] Dropped ${why}: ${targetUrl.slice(0, 120)}`);
       if (cacheKey) resolveCache.noteFailure(cacheKey);
+      health.noteVerify(s._source, false);
       return null;
     };
 
@@ -269,6 +272,7 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
       if (parsed.bitrateTag) s.bitrate = parsed.bitrateTag;
     }
     if (cacheKey) resolveCache.noteSuccess(cacheKey);
+    health.noteVerify(s._source, true);
     return s;
   }));
 
@@ -280,6 +284,65 @@ async function mintVerifiedSources(src, match, config, cacheKey) {
   const m3u8Parser = container.resolve('m3u8Parser');
   const minted = await resolveSource(src, match, config);
   return verifyStreams(minted, cacheKey, m3u8Parser, resolveCache);
+}
+
+// ─── Upstream mapping / re-mint (used by HlsGateway) ─────────────────────────
+
+/** Extract { upstream, referer, origin } from a verified direct stream. */
+function toUpstream(s) {
+  if (!s || !s.url) return null;
+  let upstream = s.url, referer = '', origin = '';
+  if (upstream.includes('/api/manifest')) {
+    try {
+      const u = new URL(upstream, 'http://localhost');
+      upstream = u.searchParams.get('url') || upstream;
+      referer = u.searchParams.get('referer') || '';
+      origin = u.searchParams.get('origin') || '';
+    } catch (_) {}
+  }
+  if (!referer && s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request) {
+    referer = s.behaviorHints.proxyHeaders.request.Referer || '';
+  }
+  if (!referer) referer = DIRECT_REFERERS[s._source] || '';
+  if (!origin && referer) { try { origin = new URL(referer).origin; } catch (_) {} }
+  if (!/^https?:\/\//.test(upstream)) return null;
+  return { upstream, referer, origin };
+}
+
+/**
+ * Drop the cached mint for one source and resolve + verify it again.
+ * Returns the fresh upstream list in the same order as the original mint, so
+ * HlsGateway can keep serving the n-th stream under the same key.
+ */
+async function remintForKey({ source, matchId, srcId }) {
+  const resolveCache = container.resolve('streamResolveCache');
+  const key = `${source}:${matchId}:${srcId}`;
+  let src, match;
+  if (matchId === '__channel__') {
+    src = { source, id: srcId, original_category: 'cricket' };
+    match = { id: matchId, category: 'cricket', title: String(srcId) };
+  } else {
+    match = container.resolve('cacheService').getMatches().find(m => m.id === matchId);
+    if (!match) return [];
+    src = (match.sources || []).find(x => x.source === source && String(x.id) === String(srcId));
+    if (!src) return [];
+  }
+  resolveCache.entries.delete(key);
+  const minted = await resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, null, key));
+  return minted.map(toUpstream).filter(Boolean);
+}
+
+/** Give a verified direct stream its permanent gateway URL. */
+function toGatewayUrl(s, matchId) {
+  const up = toUpstream(s);
+  if (!up || !s._cacheKey) return null;
+  const parts = s._cacheKey.split(':');
+  const source = parts[0];
+  const srcId = parts.slice(2).join(':');
+  const key = HlsGateway.encodeKey({ source, matchId: parts[1], srcId, idx: s._idx || 0 });
+  container.resolve('hlsGateway').register(key, { ...up, source });
+  const { BASE_URL } = require('./config');
+  return `${BASE_URL}/api/hls/${key}/index.m3u8`;
 }
 
 // ─── Prewarm ─────────────────────────────────────────────────────────────────
@@ -334,8 +397,10 @@ function decorateStream(s, match) {
   const isWeb = !s.url && !!s.externalUrl;
   const hints = extractHints(s.title);
   const quality = qualityLabel(s);
+  const health = container.resolve('sourceHealth');
+  const healthLabel = isWeb ? '' : health.label(s._source);
 
-  const parts = [`${icon} ${provider}`];
+  const parts = [`${icon} ${provider}${healthLabel ? ' · ' + healthLabel : ''}`];
   if (hints.channel) parts.push(`📺 ${hints.channel}`);
   if (hints.language) parts.push(`🗣 ${hints.language}`);
   parts.push(isWeb ? '🌐 Opens in browser' : `🎞 ${quality}`);
@@ -346,6 +411,18 @@ function decorateStream(s, match) {
 
   s.behaviorHints = s.behaviorHints || {};
   s.behaviorHints.bingeGroup = `nuvio_sport_${match.id}`;
+
+  // Every direct stream goes through the self-healing HLS gateway: stable
+  // URL, server-side headers, segment relay, automatic re-mint on failure.
+  if (s.url && s._source !== 'iptv-org') {
+    const gw = toGatewayUrl(s, match.id);
+    if (gw) {
+      s.url = gw;
+      delete s.behaviorHints.notWebReady;
+      delete s.behaviorHints.proxyHeaders;
+      return s;
+    }
+  }
 
   // Raw (non-proxied) m3u8: the player must send the upstream's referer.
   if (s.url && s.url.includes('.m3u8') && !s.url.includes('/api/manifest')) {
@@ -402,7 +479,7 @@ async function handleStream(type, id, config) {
   const results = await Promise.all(activeSources.map(async (src) => {
     const key = `${src.source}:${matchId}:${src.id}`;
     const work = resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, config, key))
-      .then((minted) => minted.map((s) => ({ ...s, _cacheKey: key })))
+      .then((minted) => minted.map((s, i) => ({ ...s, _cacheKey: key, _idx: i })))
       .catch(() => []);
     const out = await Promise.race([work, deadline]);
     if (out === '__deadline__') { partial = true; work.catch(() => {}); return []; }
@@ -420,7 +497,7 @@ async function handleStream(type, id, config) {
         const resolved = await resolveCache.getOrCreate(key, () => mintVerifiedSources(
           { source: 'streamfree', id: channel.id, original_category: 'cricket' },
           { category: 'cricket', title: channel.title }, config, key));
-        return resolved.map((s) => ({ ...s, _cacheKey: key, title: `StreamFree (${channel.title})` }));
+        return resolved.map((s, i) => ({ ...s, _cacheKey: key, _idx: i, title: `StreamFree (${channel.title})` }));
       }));
       warmed.flat().forEach((s) => {
         s.score = streamScorer.calculateScore(s, 'streamfree');
@@ -432,26 +509,44 @@ async function handleStream(type, id, config) {
     }
   }
 
+  const health = container.resolve('sourceHealth');
+  const heightOf = (s) => { const m = String(s.resolution || s.quality || '').match(/(\d{3,4})p?$/); return m ? parseInt(m[1], 10) : 0; };
+
   let out = dedupeStreams(streams).map(s => decorateStream(s, match));
 
-  // Optional: hide browser-only streams entirely
-  const directOnly = config && (config.directOnly === true || config.directOnly === 'true' || config.directOnly === '1');
-  if (directOnly) out = out.filter(s => !!s.url);
-
+  // Deterministic order: direct first, then source reliability (bucketed so
+  // small score drifts do not reshuffle), then resolution, then source priority.
   out.sort((a, b) => {
     const aDirect = a.url ? 1 : 0;
     const bDirect = b.url ? 1 : 0;
     if (aDirect !== bDirect) return bDirect - aDirect;
-    if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
-    return priorityOf(a._source) - priorityOf(b._source);
+    const ha = Math.round(health.score(a._source) * 5), hb = Math.round(health.score(b._source) * 5);
+    if (ha !== hb) return hb - ha;
+    const ra = heightOf(a), rb = heightOf(b);
+    if (ra !== rb) return rb - ra;
+    const pa = priorityOf(a._source), pb = priorityOf(b._source);
+    if (pa !== pb) return pa - pb;
+    return (a._idx || 0) - (b._idx || 0);
   });
 
+  // Quality gate: unreliable sources are hidden while at least two healthier
+  // direct streams exist. Browser streams only appear when there is no direct
+  // stream at all (or never, with directOnly).
+  const directOnly = config && (config.directOnly === true || config.directOnly === 'true' || config.directOnly === '1');
+  const maxStreams = Math.max(1, Math.min(20, parseInt(config && config.maxStreams, 10) || 6));
+  let direct = out.filter(s => !!s.url);
+  const healthy = direct.filter(s => health.score(s._source) >= 0.5 || health.samples(s._source) < 4);
+  if (healthy.length >= 2) direct = healthy;
+  direct = direct.slice(0, maxStreams);
+  const web = (direct.length > 0 || directOnly) ? [] : out.filter(s => !s.url).slice(0, 4);
+  out = [...direct, ...web];
+
   // Strip internal fields before they reach the client
-  out = out.map(({ _source, _cacheKey, score, resolution, bitrate, quality, ...rest }) => rest);
+  out = out.map(({ _source, _cacheKey, _idx, score, resolution, bitrate, quality, ...rest }) => rest);
 
   return partial
     ? { streams: out, partial: true, cacheMaxAge: 5, staleRevalidate: 5, staleError: 30 }
     : { streams: out, cacheMaxAge: 30, staleRevalidate: 30, staleError: 120 };
 }
 
-module.exports = { handleStream, prewarmMatch, selectSources };
+module.exports = { handleStream, prewarmMatch, selectSources, remintForKey };

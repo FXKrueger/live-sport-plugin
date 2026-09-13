@@ -22,6 +22,8 @@ const PpvProvider = require('./providers/PpvProvider');
 const NtvProvider = require('./providers/NtvProvider');
 const SportsindxProvider = require('./providers/SportsindxProvider');
 const EmbedResolver = require('./services/EmbedResolver');
+const SourceHealth = require('./services/SourceHealth');
+const HlsGateway = require('./services/HlsGateway');
 
 const YamlProviderBuilder = require('./services/YamlProviderBuilder');
 const StreamResolveCache = require('./services/StreamResolveCache');
@@ -38,7 +40,9 @@ container.register({
   cronService: asClass(CronService).singleton(),
   matchAggregator: asClass(MatchAggregator).singleton(),
   streamScorer: asClass(StreamScoringService).singleton(),
-  streamResolveCache: asValue(new StreamResolveCache())
+  streamResolveCache: asValue(new StreamResolveCache()),
+  sourceHealth: asClass(SourceHealth).singleton(),
+  hlsGateway: asClass(HlsGateway).singleton()
 });
 
 // Build dynamic YAML Providers

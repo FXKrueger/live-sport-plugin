@@ -128,12 +128,17 @@ app.get('/api/status', (_, res) => {
   const { isMatchLive } = require('./catalog');
   const live = matches.filter(m => isMatchLive(m)).length;
   res.setHeader('Cache-Control', 'no-store');
+  let health = null, gateway = null;
+  try { health = container.resolve('sourceHealth').snapshot(); } catch (_) {}
+  try { gateway = container.resolve('hlsGateway').stats(); } catch (_) {}
   res.json({
     version: require('../package.json').version,
     matches: matches.length,
     live,
     sync: cron,
     streamCache: cache,
+    sourceHealth: health,
+    hlsGateway: gateway,
     breakers: breakers.filter(b => b.open || b.halfOpen)
   });
 });
@@ -196,7 +201,7 @@ const MANIFEST_TTL_MS = 3000;
 // RELAY_SEGMENTS=true routes media segments through this server as well.
 // Needed when a CDN binds the stream token to the IP that minted it (the
 // server), so the player's own IP gets 403/timeouts. Costs server bandwidth.
-const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS === 'true';
+const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS !== 'false';
 const MANIFEST_CACHE_MAX = 100;
 const MANIFEST_NEGATIVE_TTL_MS = 15 * 1000;
 const manifestCache = new Map();      // key -> { body, expiresAt, lastAccess }
@@ -391,6 +396,12 @@ app.get('/api/manifest', async (req, res) => {
   }
 });
 
+// ─── /api/hls — stable, self-healing HLS gateway (see services/HlsGateway) ────
+const hlsGateway = container.resolve('hlsGateway');
+app.get('/api/hls/:key/index.m3u8', (req, res) => hlsGateway.serveIndex(req, res));
+app.get('/api/hls/:key/sub.m3u8', (req, res) => hlsGateway.serveSub(req, res));
+app.get('/api/hls/:key/seg', (req, res) => hlsGateway.serveSegment(req, res));
+
 // ─── /api/segment — media segment relay (only used when RELAY_SEGMENTS=true) ──
 let segmentDispatcher = null;
 app.get('/api/segment', async (req, res) => {
@@ -541,12 +552,12 @@ app.use((req, res, next) => {
         const rewriteUrl = (url) => {
           if (!url || typeof url !== 'string') return url;
           // Relative URLs
-          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/logo')) {
+          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/api/hls') || url.startsWith('/logo')) {
             modified = true;
             return `${currentBaseUrl}${url}`;
           }
           // Absolute URLs with legacy/static base or localhost/LAN IP
-          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|logo)(?:[?\/].*)?)$/);
+          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|api\/hls|logo)(?:[?\/].*)?)$/);
           if (match) {
             modified = true;
             return `${currentBaseUrl}${match[1]}`;
@@ -1046,14 +1057,22 @@ app.get('/watch', (req, res) => {
       const onFail = () => { loader.querySelector('.hint').textContent = 'Stream failed to load. Try another source.'; };
 
       if (Hls.isSupported()) {
-        const hls = new Hls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 6, lowLatencyMode: true, enableWorker: true });
-        hls.loadSource(targetUrl);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => {});
-          loader.classList.add('hidden');
-        });
-        hls.on(Hls.Events.ERROR, (_, d) => { if (d && d.fatal) onFail(); });
+        let hls = null, restarts = 0;
+        const start = () => {
+          if (hls) { try { hls.destroy(); } catch (_) {} }
+          hls = new Hls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 8, lowLatencyMode: true, enableWorker: true,
+            manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6, fragLoadingRetryDelay: 1000 });
+          hls.loadSource(targetUrl);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); loader.classList.add('hidden'); });
+          hls.on(Hls.Events.ERROR, (_, d) => {
+            if (!d || !d.fatal) return;
+            if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+            if (restarts++ < 8) { loader.classList.remove('hidden'); loader.querySelector('.hint').textContent = 'Reconnecting…'; setTimeout(start, 1500 + restarts * 500); }
+            else onFail();
+          });
+        };
+        start();
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = targetUrl;
         video.addEventListener('loadedmetadata', () => { video.play().catch(() => {}); loader.classList.add('hidden'); });

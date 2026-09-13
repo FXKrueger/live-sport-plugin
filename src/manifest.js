@@ -43,7 +43,8 @@ const manifest = {
     { key: 'teams', title: 'Favorite Teams (comma separated)', type: 'text' },
     { key: 'sports', title: 'Enabled Sports (comma separated)', type: 'text', default: 'all' },
     { key: 'sources', title: 'Enabled Sources (comma separated)', type: 'text', default: DEFAULT_SOURCE_IDS.join(',') },
-    { key: 'directOnly', title: 'Hide browser-only streams', type: 'checkbox' },
+    { key: 'directOnly', title: 'Never show browser streams', type: 'checkbox' },
+    { key: 'maxStreams', title: 'Direct streams per match', type: 'number', default: 6 },
     { key: 'timezone', title: 'Timezone', type: 'text', default: 'UTC' }
   ],
 

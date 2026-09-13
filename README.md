@@ -107,6 +107,8 @@ pm2 startup
 - **🧲 Generic embed resolver:** any remaining embed page is fetched server-side, scanned for plain / JSON / base64 / XOR-obfuscated playlists and nested iframes, and promoted to a direct stream when found. Browser fallback stays as the last resort.
 - **⚡ Coalescing HLS manifest proxy (`/api/manifest`):** keep-alive upstream client, in-flight request coalescing and 15 s negative caching so a live player poll never hammers a dead CDN.
 - **🔄 Fresh catalogs:** full provider re-sync every 10 minutes (cron), traffic-driven stale-while-revalidate after 3 minutes, a rate-limited manual **Refresh** button on the dashboard and short client cache hints so Nuvio picks up live status changes quickly.
+- **🛡️ Self-healing HLS gateway (`/api/hls/<key>/…`):** every direct stream gets a permanent URL. The server fetches playlists and segments with the right headers, re-mints the source automatically when a token expires or a CDN node dies, and serves the last good playlist while it does, so the player keeps going instead of erroring out mid-game.
+- **📈 Source reliability scoring:** every verification and playback outcome feeds a rolling score per source. The picker is sorted by that score (then resolution), unreliable sources are hidden while healthier ones exist, and browser streams only show when nothing direct is available.
 - **🧠 Verified, ranked streams:** every direct stream is pre-flighted once per mint (dead 403/404/5xx and fake 200 bodies are dropped), de-duplicated by upstream URL, then sorted direct-first by quality and source reliability. Optional **"Hide browser-only streams"** setting.
 - **🖼️ Resilient image pipeline (`/img`):** cached proxy with generated SVG fallbacks, so posters and crests never break.
 - **🌐 Dynamic host routing:** manifests, streams and images are rewritten to whatever host the client used (Render, Cloudflare Tunnel, LAN IP, custom domain).
@@ -135,7 +137,7 @@ pm2 startup
 | `LOW_MEMORY_MODE` | unset | `true` = fetch providers sequentially (256 MB hosts) |
 | `STREAM_DEADLINE_MS` | `8000` | a `/stream` request answers after this with the sources that are ready; the rest keep resolving in the background |
 | `PREWARM_LIVE` / `PREWARM_CRON` / `PREWARM_MAX` | `true` / `*/3 * * * *` / `8` | pre-resolve streams for live matches so the picker opens instantly |
-| `RELAY_SEGMENTS` | `false` | `true` = also proxy media segments through the server (fixes CDNs that bind tokens to the server IP; costs bandwidth) |
+| `RELAY_SEGMENTS` | `true` | media segments are relayed through the server so IP-bound CDN tokens work for every player; set `false` to let players fetch segments directly (saves bandwidth, breaks some sources) |
 
 ### Useful endpoints
 

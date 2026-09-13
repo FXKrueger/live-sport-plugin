@@ -139,7 +139,7 @@
         <div class="grid src-grid" id="sourcesGrid"><div class="hint">Loading sources…</div></div>
         <div style="margin-top:14px">
           <div class="toggle" id="directOnlyToggle">
-            <div><div class="t">Hide browser-only streams</div><div class="s">Only list streams that play natively. Fewer options, zero browser hops.</div></div>
+            <div><div class="t">Never show browser streams</div><div class="s">Browser streams are already hidden whenever a direct stream exists. Turn this on to hide them even when nothing direct is available.</div></div>
             <div class="switch"></div>
           </div>
         </div>
@@ -147,6 +147,13 @@
 
       <section class="card">
         <h2><span class="step">3</span> Personalise</h2>
+        <label class="field">Direct streams per match (best first)</label>
+        <select id="maxStreams">
+          <option value="3">3 — only the most reliable</option>
+          <option value="6" selected>6 — recommended</option>
+          <option value="10">10</option>
+          <option value="20">20 — everything that passed verification</option>
+        </select>
         <label class="field">Timezone (kick-off times are shown in this zone)</label>
         <select id="timezone"></select>
         <label class="field">Favourite teams — creates a "⭐ Your Teams" catalog (comma separated)</label>
@@ -214,6 +221,8 @@
   const teams = $('#teams');
   const tz = $('#timezone');
   const directToggle = $('#directOnlyToggle');
+  const maxStreams = $('#maxStreams');
+  if (existing.maxStreams) maxStreams.value = String(existing.maxStreams);
   let directOnly = false;
 
   // ── Timezones ──────────────────────────────────────────────────────────────
@@ -263,6 +272,7 @@
     const sameAsDefault = sources.length === defaults.length && sources.every(s => defaults.includes(s));
     if (!sameAsDefault) config.sources = sources.length ? (sources.length === SOURCES.length ? 'all' : sources.join(',')) : 'none';
     if (directOnly) config.directOnly = true;
+    if (maxStreams.value && maxStreams.value !== '6') config.maxStreams = parseInt(maxStreams.value, 10);
 
     manifestUrl = location.origin + '/manifest.json';
     if (Object.keys(config).length) {
@@ -284,6 +294,7 @@
   [...sportBoxes, ...sourceBoxes].forEach(cb => cb.addEventListener('change', () => { cb.closest('.opt').classList.toggle('on', cb.checked); update(); }));
   teams.addEventListener('input', update);
   tz.addEventListener('change', update);
+  maxStreams.addEventListener('change', update);
   directToggle.addEventListener('click', () => { directOnly = !directOnly; directToggle.classList.toggle('on', directOnly); update(); });
   $$('.toolbar .btn-sm').forEach(b => b.addEventListener('click', () => {
     const boxes = b.dataset.sel === 'sports' ? sportBoxes : sourceBoxes;
