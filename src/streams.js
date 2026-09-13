@@ -132,18 +132,24 @@ function getVerifyImpitClient() {
 /** GET a text resource with the stream's headers. Returns { status, body }. */
 async function probeText(url, headers, timeoutMs) {
   const impitClient = getVerifyImpitClient();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
+  // Impit (browser TLS fingerprint) first with half the budget, undici with
+  // the other half. Each leg has its own deadline covering headers AND body.
+  const half = Math.max(2000, Math.floor(timeoutMs / 2));
+  if (impitClient) {
     try {
-      if (!impitClient) throw new Error('impit unavailable');
-      const r = await impitClient.fetch(url, { method: 'GET', headers, signal: controller.signal });
-      return { status: r.status, body: await r.text() };
-    } catch (_) {
-      const { request } = require('undici');
-      const r = await request(url, { method: 'GET', headers, headersTimeout: timeoutMs, bodyTimeout: timeoutMs, signal: controller.signal, dispatcher: getLaxDispatcher() });
-      return { status: r.statusCode, body: await r.body.text() };
-    }
+      const r = await Promise.race([
+        (async () => { const res = await impitClient.fetch(url, { method: 'GET', headers }); return { status: res.status, body: await res.text() }; })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('impit timeout')), half))
+      ]);
+      return r;
+    } catch (_) { /* fall through to undici */ }
+  }
+  const { request } = require('undici');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), half);
+  try {
+    const r = await request(url, { method: 'GET', headers, headersTimeout: half, bodyTimeout: half, signal: controller.signal, dispatcher: getLaxDispatcher() });
+    return { status: r.statusCode, body: await r.body.text() };
   } finally {
     clearTimeout(timer);
   }
@@ -172,6 +178,22 @@ async function probeSegment(url, headers, timeoutMs) {
   }
 }
 
+/**
+ * Resolve a playlist child URI against its parent and inherit the parent's
+ * query parameters when the child has none of them (StreamFree, some CDN
+ * edges sign the master and expect the same token on every child).
+ */
+function resolveChild(line, baseUrl) {
+  const child = new URL(line, baseUrl);
+  try {
+    const parent = new URL(baseUrl);
+    parent.searchParams.forEach((val, key) => { if (!child.searchParams.has(key)) child.searchParams.set(key, val); });
+  } catch (_) {}
+  return child.toString();
+}
+
+function hostOf(u) { try { return new URL(u).hostname; } catch (_) { return ''; } }
+
 function firstUri(body, baseUrl, { segments }) {
   const lines = body.split('\n').map(l => l.trim());
   for (let i = 0; i < lines.length; i++) {
@@ -181,7 +203,7 @@ function firstUri(body, baseUrl, { segments }) {
     const prev = lines.slice(Math.max(0, i - 3), i).join(' ');
     if (segments && !prev.includes('#EXTINF')) continue;
     if (!segments && !prev.includes('#EXT-X-STREAM-INF')) continue;
-    try { return new URL(l, baseUrl).toString(); } catch (_) { return null; }
+    try { return resolveChild(l, baseUrl); } catch (_) { return null; }
   }
   return null;
 }
@@ -192,8 +214,11 @@ function firstUri(body, baseUrl, { segments }) {
  * that only passes the master check is exactly the kind that "loads forever"
  * in the player, so all three must succeed. Browser streams pass through.
  */
-async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
-
+async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache, match) {
+  // Only live matches say something about source reliability; an upcoming
+  // match with no stream yet is not the source's fault.
+  let matchIsLive = true;
+  try { if (match && match.date) matchIsLive = require('./catalog').isMatchLive(match); } catch (_) {}
   const checked = await Promise.all(streams.map(async (s) => {
     if (!s.url || s.url.includes('/watch?')) return s;
 
@@ -221,7 +246,8 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
     const drop = (why) => {
       console.log(`[Filter] Dropped ${why}: ${targetUrl.slice(0, 120)}`);
       if (cacheKey) resolveCache.noteFailure(cacheKey);
-      health.noteVerify(s._source, false);
+      if (matchIsLive) health.noteVerify(s._source, false);
+      health.remember({ source: s._source, key: cacheKey, live: matchIsLive, outcome: 'dropped', why, host: hostOf(targetUrl) });
       return null;
     };
 
@@ -236,7 +262,11 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
     if (status === 404 || status === 403 || status >= 500) return drop(`dead stream (${status})`);
     if (!body.includes('#EXT')) return drop('non-M3U8 body');
 
-    // Level 2: variant playlist (masters only)
+    // Level 2: variant playlist (masters only). A variant the server cannot
+    // read (403/5xx = datacenter IP blocked) is not necessarily dead for the
+    // viewer's own IP, so the stream is kept in "raw" mode: the player gets
+    // the original URL and fetches everything itself, as before.
+    s._mode = 'relay';
     let mediaBody = body;
     let mediaUrl = targetUrl;
     if (body.includes('#EXT-X-STREAM-INF')) {
@@ -244,26 +274,36 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
       if (variantUrl) {
         try {
           const v = await probeText(variantUrl, reqHeaders, 8000);
-          if (v.status >= 400 || !v.body.includes('#EXT')) return drop(`dead variant (${v.status})`);
-          mediaBody = v.body;
-          mediaUrl = variantUrl;
-        } catch (err) {
-          return drop(`unreachable variant (${err.message})`);
+          if (v.status === 404) return drop('dead variant (404)');
+          if (v.status < 400 && v.body.includes('#EXT')) {
+            mediaBody = v.body;
+            mediaUrl = variantUrl;
+          } else {
+            s._mode = 'raw';
+          }
+        } catch (_) {
+          s._mode = 'raw';
         }
       }
     }
 
-    // Level 3: first media segment must actually serve bytes
-    if (!mediaBody.includes('#EXTINF')) return drop('playlist without segments');
-    const segUrl = firstUri(mediaBody, mediaUrl, { segments: true });
-    if (segUrl) {
-      try {
-        const seg = await probeSegment(segUrl, reqHeaders, 8000);
-        if (seg.status >= 400 || !seg.gotBytes) return drop(`dead segment (${seg.status})`);
-      } catch (err) {
-        return drop(`unreachable segment (${err.message})`);
+    // Level 3: first media segment. Blocked for the server -> segments are
+    // handed to the player directly (playlists still go through the gateway).
+    if (s._mode === 'relay') {
+      if (!mediaBody.includes('#EXTINF')) return drop('playlist without segments');
+      const segUrl = firstUri(mediaBody, mediaUrl, { segments: true });
+      if (segUrl) {
+        try {
+          const seg = await probeSegment(segUrl, reqHeaders, 8000);
+          if (seg.status === 404) return drop('dead segment (404)');
+          if (seg.status >= 400 && seg.status !== 416) s._mode = 'direct-segments';
+          else if (seg.status < 400 && !seg.gotBytes) s._mode = 'direct-segments';
+        } catch (_) {
+          s._mode = 'direct-segments';
+        }
       }
     }
+    if (s._mode !== 'relay') console.log(`[Filter] ${s._source} kept in ${s._mode} mode: ${targetUrl.slice(0, 100)}`);
 
     const parsed = m3u8Parser.parseManifestText(body);
     if (parsed) {
@@ -272,7 +312,8 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
       if (parsed.bitrateTag) s.bitrate = parsed.bitrateTag;
     }
     if (cacheKey) resolveCache.noteSuccess(cacheKey);
-    health.noteVerify(s._source, true);
+    if (matchIsLive) health.noteVerify(s._source, s._mode === 'relay');
+    health.remember({ source: s._source, key: cacheKey, live: matchIsLive, outcome: 'ok', mode: s._mode, host: hostOf(targetUrl), quality: s.resolution || s.quality || '' });
     return s;
   }));
 
@@ -283,7 +324,7 @@ async function mintVerifiedSources(src, match, config, cacheKey) {
   const resolveCache = container.resolve('streamResolveCache');
   const m3u8Parser = container.resolve('m3u8Parser');
   const minted = await resolveSource(src, match, config);
-  return verifyStreams(minted, cacheKey, m3u8Parser, resolveCache);
+  return verifyStreams(minted, cacheKey, m3u8Parser, resolveCache, match);
 }
 
 // ─── Upstream mapping / re-mint (used by HlsGateway) ─────────────────────────
@@ -306,7 +347,7 @@ function toUpstream(s) {
   if (!referer) referer = DIRECT_REFERERS[s._source] || '';
   if (!origin && referer) { try { origin = new URL(referer).origin; } catch (_) {} }
   if (!/^https?:\/\//.test(upstream)) return null;
-  return { upstream, referer, origin };
+  return { upstream, referer, origin, relay: s._mode !== 'direct-segments' };
 }
 
 /**
@@ -412,9 +453,10 @@ function decorateStream(s, match) {
   s.behaviorHints = s.behaviorHints || {};
   s.behaviorHints.bingeGroup = `nuvio_sport_${match.id}`;
 
-  // Every direct stream goes through the self-healing HLS gateway: stable
-  // URL, server-side headers, segment relay, automatic re-mint on failure.
-  if (s.url && s._source !== 'iptv-org') {
+  // Direct streams go through the self-healing HLS gateway: stable URL,
+  // server-side headers, segment relay, automatic re-mint on failure. Streams
+  // the server itself cannot read ("raw" mode) keep the original client path.
+  if (s.url && s._source !== 'iptv-org' && s._mode !== 'raw') {
     const gw = toGatewayUrl(s, match.id);
     if (gw) {
       s.url = gw;
@@ -535,14 +577,14 @@ async function handleStream(type, id, config) {
   const directOnly = config && (config.directOnly === true || config.directOnly === 'true' || config.directOnly === '1');
   const maxStreams = Math.max(1, Math.min(20, parseInt(config && config.maxStreams, 10) || 6));
   let direct = out.filter(s => !!s.url);
-  const healthy = direct.filter(s => health.score(s._source) >= 0.5 || health.samples(s._source) < 4);
+  const healthy = direct.filter(s => health.score(s._source) >= 0.35 || health.samples(s._source) < 10);
   if (healthy.length >= 2) direct = healthy;
   direct = direct.slice(0, maxStreams);
   const web = (direct.length > 0 || directOnly) ? [] : out.filter(s => !s.url).slice(0, 4);
   out = [...direct, ...web];
 
   // Strip internal fields before they reach the client
-  out = out.map(({ _source, _cacheKey, _idx, score, resolution, bitrate, quality, ...rest }) => rest);
+  out = out.map(({ _source, _cacheKey, _idx, _mode, score, resolution, bitrate, quality, ...rest }) => rest);
 
   return partial
     ? { streams: out, partial: true, cacheMaxAge: 5, staleRevalidate: 5, staleError: 30 }

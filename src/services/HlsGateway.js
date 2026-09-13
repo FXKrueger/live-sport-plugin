@@ -38,6 +38,16 @@ function getImpit() {
   }
   return impit;
 }
+/** Resolve a child URI and inherit the parent's query params when missing. */
+function resolveChild(line, baseUrl) {
+  const child = new URL(line, baseUrl);
+  try {
+    const parent = new URL(baseUrl);
+    parent.searchParams.forEach((val, key) => { if (!child.searchParams.has(key)) child.searchParams.set(key, val); });
+  } catch (_) {}
+  return child.toString();
+}
+
 const laxAgent = new Agent({ connect: { rejectUnauthorized: false, timeout: 10000 }, keepAliveTimeout: 15000 });
 
 class HlsGateway {
@@ -60,10 +70,11 @@ class HlsGateway {
   }
 
   /** Called by streams.js when a verified stream is handed to the client. */
-  register(key, { upstream, referer, origin, source }) {
+  register(key, { upstream, referer, origin, source, relay }) {
     const prev = this.entries.get(key);
     this.entries.set(key, {
       upstream, referer: referer || '', origin: origin || '', source,
+      relay: RELAY_SEGMENTS && relay !== false,
       updatedAt: Date.now(),
       healing: prev ? prev.healing : null,
       lastHealAt: prev ? prev.lastHealAt : 0
@@ -109,7 +120,7 @@ class HlsGateway {
           if (this.sourceHealth) this.sourceHealth.notePlay(parsed.source, false);
           return null;
         }
-        this.register(key, { ...pick, source: parsed.source });
+        this.register(key, { ...pick, source: parsed.source, relay: pick.relay });
         this.entries.get(key).lastHealAt = Date.now();
         return this.entries.get(key);
       } catch (err) {
@@ -245,7 +256,7 @@ class HlsGateway {
         const l = lines[j].trim();
         if (!l) continue;
         if (l.startsWith('#')) continue;
-        try { out.push(new URL(l, baseUrl).toString()); } catch (_) { out.push(null); }
+        try { out.push(resolveChild(l, baseUrl)); } catch (_) { out.push(null); }
         break;
       }
     }
@@ -263,14 +274,14 @@ class HlsGateway {
       if (!line) return raw;
       if (line.startsWith('#EXT-X-MEDIA') && line.includes('URI="')) {
         return line.replace(/URI="([^"]+)"/, (_, u) => {
-          let abs = u; try { abs = new URL(u, masterUrl).toString(); } catch (_) {}
+          let abs = u; try { abs = resolveChild(u, masterUrl); } catch (_) {}
           return `URI="/api/hls/${key}/sub.m3u8?u=${encodeURIComponent(abs)}"`;
         });
       }
       if (line.startsWith('#EXT-X-I-FRAME-STREAM-INF')) return ''; // trick-play playlists: not needed live
       if (line.startsWith('#EXT-X-SESSION-KEY') && line.includes('URI="')) {
         return line.replace(/URI="([^"]+)"/, (_, u) => {
-          let abs = u; try { abs = new URL(u, masterUrl).toString(); } catch (_) {}
+          let abs = u; try { abs = resolveChild(u, masterUrl); } catch (_) {}
           return `URI="${this.segUrl(key, abs)}"`;
         });
       }
@@ -279,20 +290,19 @@ class HlsGateway {
     }).join('\n');
   }
 
-  rewriteMedia(body, key, baseUrl) {
-    const relay = RELAY_SEGMENTS;
+  rewriteMedia(body, key, baseUrl, relay = RELAY_SEGMENTS) {
     return body.split('\n').map(raw => {
       const line = raw.trim();
       if (!line) return raw;
       if ((line.startsWith('#EXT-X-KEY') || line.startsWith('#EXT-X-MAP')) && line.includes('URI="')) {
         return line.replace(/URI="([^"]+)"/, (_, u) => {
-          let abs = u; try { abs = new URL(u, baseUrl).toString(); } catch (_) {}
+          let abs = u; try { abs = resolveChild(u, baseUrl); } catch (_) {}
           return `URI="${relay ? this.segUrl(key, abs) : abs}"`;
         });
       }
       if (line.startsWith('#')) return raw;
       let abs = line;
-      try { abs = new URL(line, baseUrl).toString(); } catch (_) {}
+      try { abs = resolveChild(line, baseUrl); } catch (_) {}
       if (abs.includes('.m3u8')) return `/api/hls/${key}/sub.m3u8?u=${encodeURIComponent(abs)}`;
       return relay ? this.segUrl(key, abs) : abs;
     }).join('\n');
@@ -314,7 +324,7 @@ class HlsGateway {
       this._playlistHeaders(res, out.stale);
       const body = HlsGateway.isMaster(out.body)
         ? this.rewriteMaster(out.body, key, out.url)
-        : this.rewriteMedia(out.body, key, out.url);
+        : this.rewriteMedia(out.body, key, out.url, out.entry.relay !== false);
       res.send(body);
     } catch (err) {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -339,7 +349,7 @@ class HlsGateway {
         return variants[Math.min(Math.max(vIdx || 0, 0), variants.length - 1)] || null;
       });
       this._playlistHeaders(res, out.stale);
-      res.send(HlsGateway.isMaster(out.body) ? this.rewriteMaster(out.body, key, out.url) : this.rewriteMedia(out.body, key, out.url));
+      res.send(HlsGateway.isMaster(out.body) ? this.rewriteMaster(out.body, key, out.url) : this.rewriteMedia(out.body, key, out.url, out.entry.relay !== false));
     } catch (err) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.status(err.status === 404 ? 404 : 503).send(`Variant unavailable: ${err.message}`);

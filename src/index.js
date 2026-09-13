@@ -138,7 +138,9 @@ app.get('/api/status', (_, res) => {
     sync: cron,
     streamCache: cache,
     sourceHealth: health,
+    recentVerifications: (() => { try { return container.resolve('sourceHealth').recentEvents().slice(0, 60); } catch (_) { return []; } })(),
     hlsGateway: gateway,
+    env: { relaySegments: process.env.RELAY_SEGMENTS !== 'false', baseUrl: BASE_URL, region: process.env.RENDER_REGION || null },
     breakers: breakers.filter(b => b.open || b.halfOpen)
   });
 });

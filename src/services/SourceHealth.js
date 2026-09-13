@@ -19,6 +19,13 @@ const START = 0.7;
 class SourceHealth {
   constructor() {
     this.stats = new Map(); // source -> { score, verifyOk, verifyFail, playOk, playFail, samples, updatedAt }
+    this.recent = [];       // ring buffer of the last verification decisions (for /api/status)
+  }
+
+  /** Keep the last 150 verification outcomes so a remote instance can be diagnosed without logs. */
+  remember(event) {
+    this.recent.push({ at: new Date().toISOString(), ...event });
+    if (this.recent.length > 150) this.recent.splice(0, this.recent.length - 150);
   }
 
   _get(source) {
@@ -71,6 +78,10 @@ class SourceHealth {
     const out = {};
     for (const [k, v] of this.stats) out[k] = { ...v, score: Math.round(v.score * 100) / 100 };
     return out;
+  }
+
+  recentEvents() {
+    return this.recent.slice().reverse();
   }
 }
 
