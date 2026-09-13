@@ -173,9 +173,9 @@ function manifestCacheGet(key) {
   return e;
 }
 
-function manifestCacheSet(key, body) {
+function manifestCacheSet(key, body, ttlMs = MANIFEST_TTL_MS) {
   const now = Date.now();
-  manifestCache.set(key, { body, expiresAt: now + MANIFEST_TTL_MS, lastAccess: now });
+  manifestCache.set(key, { body, expiresAt: now + ttlMs, lastAccess: now });
   evictManifestCacheIfNeeded();
 }
 
@@ -241,6 +241,19 @@ app.get('/api/manifest', async (req, res) => {
           throw new Error('Upstream returned non-m3u8 body');
         }
 
+        let dynamicTtl = MANIFEST_TTL_MS;
+        try {
+          const m3u8Parser = require('m3u8-parser');
+          const parser = new m3u8Parser.Parser();
+          parser.push(out);
+          parser.end();
+          if (parser.manifest.targetDuration) {
+            dynamicTtl = (parser.manifest.targetDuration * 1000) / 2;
+          }
+        } catch (e) {
+          // Fallback to default TTL on parse error
+        }
+
         // Rewrite the manifest
         const lines = out.split('\n');
         const rewritten = lines.map(line => {
@@ -273,7 +286,7 @@ app.get('/api/manifest', async (req, res) => {
         });
 
         const rewrittenResult = rewritten.join('\n');
-        manifestCacheSet(cacheKey, rewrittenResult);
+        manifestCacheSet(cacheKey, rewrittenResult, dynamicTtl);
         return rewrittenResult;
       })().finally(() => {
         manifestInFlight.delete(cacheKey);
