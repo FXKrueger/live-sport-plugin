@@ -140,7 +140,8 @@ app.get('/api/status', (_, res) => {
     sourceHealth: health,
     recentVerifications: (() => { try { return container.resolve('sourceHealth').recentEvents().slice(0, 60); } catch (_) { return []; } })(),
     hlsGateway: gateway,
-    env: { relaySegments: process.env.RELAY_SEGMENTS !== 'false', baseUrl: BASE_URL, region: process.env.RENDER_REGION || null },
+    env: { relaySegments: process.env.RELAY_SEGMENTS === 'true', baseUrl: BASE_URL, region: process.env.RENDER_REGION || null },
+    memory: (() => { const m = process.memoryUsage(); return { rssMb: Math.round(m.rss / 1048576), heapMb: Math.round(m.heapUsed / 1048576) }; })(),
     breakers: breakers.filter(b => b.open || b.halfOpen)
   });
 });
@@ -203,7 +204,7 @@ const MANIFEST_TTL_MS = 3000;
 // RELAY_SEGMENTS=true routes media segments through this server as well.
 // Needed when a CDN binds the stream token to the IP that minted it (the
 // server), so the player's own IP gets 403/timeouts. Costs server bandwidth.
-const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS !== 'false';
+const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS === 'true';
 const MANIFEST_CACHE_MAX = 100;
 const MANIFEST_NEGATIVE_TTL_MS = 15 * 1000;
 const manifestCache = new Map();      // key -> { body, expiresAt, lastAccess }

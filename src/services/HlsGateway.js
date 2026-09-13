@@ -25,7 +25,7 @@
 const { request, Agent } = require('undici');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
-const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS !== 'false';
+const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS === 'true';
 const PLAYLIST_TTL_MS = 2500;
 const STALE_MAX_MS = 60 * 1000;
 const ENTRY_TTL_MS = 6 * 60 * 60 * 1000;

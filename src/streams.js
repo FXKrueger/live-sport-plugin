@@ -494,9 +494,14 @@ function decorateStream(s, match) {
   if (s.url && s._source !== 'iptv-org' && s._mode !== 'raw') {
     const gw = toGatewayUrl(s, match.id);
     if (gw) {
+      const up = toUpstream(s);
       s.url = gw;
-      delete s.behaviorHints.notWebReady;
-      delete s.behaviorHints.proxyHeaders;
+      s.behaviorHints.notWebReady = true;
+      if (up && up.referer) {
+        s.behaviorHints.proxyHeaders = { request: { 'Referer': up.referer, 'Origin': up.origin || up.referer.replace(/\/$/, ''), 'User-Agent': UA } };
+      } else {
+        delete s.behaviorHints.proxyHeaders;
+      }
       return s;
     }
   }

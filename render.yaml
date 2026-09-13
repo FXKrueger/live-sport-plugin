@@ -23,3 +23,9 @@ services:
       # Traffic-driven stale-while-revalidate window (ms)
       - key: CATALOG_REVALIDATE_MS
         value: 180000
+      # Keep segment relay OFF on Render (Cloudflare edge challenges players)
+      - key: RELAY_SEGMENTS
+        value: "false"
+      # Fewer concurrent prewarms on the 512 MB free instance
+      - key: PREWARM_MAX
+        value: 4

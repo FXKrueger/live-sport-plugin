@@ -137,7 +137,7 @@ pm2 startup
 | `LOW_MEMORY_MODE` | unset | `true` = fetch providers sequentially (256 MB hosts) |
 | `STREAM_DEADLINE_MS` | `8000` | a `/stream` request answers after this with the sources that are ready; the rest keep resolving in the background |
 | `PREWARM_LIVE` / `PREWARM_CRON` / `PREWARM_MAX` | `true` / `*/3 * * * *` / `8` | pre-resolve streams for live matches so the picker opens instantly |
-| `RELAY_SEGMENTS` | `true` | media segments are relayed through the server so IP-bound CDN tokens work for every player; set `false` to let players fetch segments directly (saves bandwidth, breaks some sources) |
+| `RELAY_SEGMENTS` | `false` | `true` relays media segments through the server (needed for CDNs that bind tokens to the server IP). **Do not enable on Render**: its Cloudflare edge challenges players that request many objects per minute and every segment counts against the bandwidth quota. Fine on a VPS / home server behind a Cloudflare Tunnel. |
 
 ### Useful endpoints
 
