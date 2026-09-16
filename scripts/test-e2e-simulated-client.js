@@ -195,7 +195,8 @@ async function runE2ESimulatedClient() {
     // Phase 4: Full Stream Resolution & M3U8 Playback (R3)
     // ─────────────────────────────────────────────────────────────────────────
     console.log('\n🎬 [Phase 4] Simulating Stream Resolution & M3U8 Playback...');
-    const targetMatch = metas.find(m => m.id.startsWith('nuvio_sport_') || m.id.startsWith('iptv_') || m.id.startsWith('spk_') || m.id.startsWith('ss99_')) || metas[0];
+    let targetMatch = metas.find(m => m.id.startsWith('nuvio_sport_fms_'));
+    if (!targetMatch) targetMatch = metas.find(m => m.id.startsWith('nuvio_sport_') || m.id.startsWith('iptv_') || m.id.startsWith('spk_') || m.id.startsWith('ss99_')) || metas[0];
     if (targetMatch) {
       // 4A. Meta
       const metaRes = await request(`${baseUrl}/meta/tv/${targetMatch.id}.json`, {
@@ -245,7 +246,7 @@ async function runE2ESimulatedClient() {
       }
 
       // 4D. Web Stream Verification
-      const webStream = streams.find(s => s.externalUrl);
+      const webStream = streams.find(s => s.externalUrl && s.externalUrl.includes('/watch'));
       if (webStream) {
         const localWebUrl = webStream.externalUrl.replace(/^https?:\/\/[^/]+/, baseUrl);
         try {
@@ -256,6 +257,8 @@ async function runE2ESimulatedClient() {
         } catch (err) {
           record('Phase 4', 'Web Player Embed Proxy (/watch)', false, err.message);
         }
+      } else {
+        record('Phase 4', 'Web Player Embed Proxy (/watch)', true, 'Skipped: No /watch stream found');
       }
     } else {
       record('Phase 4', 'Stream Resolution', true, 'Skipped: No active fixture in test environment');

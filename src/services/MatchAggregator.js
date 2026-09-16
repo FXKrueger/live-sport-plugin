@@ -1,5 +1,30 @@
 // ─── Fuzzy Match Helpers ────────────────────────────────────────────────────
 
+// How long past kickoff a ReplayZone archive session is retained in the
+// aggregated cache. Bounds replay list growth; other providers keep the
+// standard 24h window.
+const REPLAY_RETENTION_DAYS = 30;
+
+/**
+ * Parses a provider-supplied match date into epoch milliseconds.
+ *
+ * Providers are inconsistent: most send a numeric epoch (as number or numeric
+ * string), but ReplayZone sends ISO date strings ("2026-09-14"). A plain
+ * Number() cast turns those into NaN, which the caller then coerces to 0 —
+ * silently disabling the date-window guard in _sameEventPre. That guard is what
+ * stops the same fixture on different days from merging, so losing it merges
+ * unrelated events (observed: a "Chicago Cubs @ Atlanta Braves" replay from May
+ * merged into the September Cubs vs Braves fixture, attaching replay streams to
+ * a live/upcoming listing).
+ */
+function _parseEventDate(raw) {
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isNaN(n) && n > 0) return n;
+  const parsed = Date.parse(String(raw));
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 /**
  * Normalizes team/event names by collapsing well-known multi-word clubs and
  * popular abbreviations into single collision-safe compound tokens so that
@@ -112,8 +137,8 @@ function _tryExtractTeams(title) {
 // ────────────────────────────────────────────────────────────────────────────
 
 class MatchAggregator {
-  constructor({ streamFreeProvider, timStreamsProvider, sportyHunterProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders }) {
-    this.providers = [streamFreeProvider, timStreamsProvider, sportyHunterProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || [])];
+  constructor({ streamFreeProvider, timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider}) {
+    this.providers = [streamFreeProvider, timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || []), replayzoneProvider];
     this.cacheService = cacheService;
   }
 
@@ -128,7 +153,7 @@ class MatchAggregator {
     return {
       id,
       category: e && e.category ? String(e.category) : '',
-      date: Number(e && e.date) || 0,
+      date: _parseEventDate(e && e.date),
       teams: _tryExtractTeams(title),
       tokens: new Set(_tokenize(_compoundify(_stripNoise(title)))),
       norm: _compoundify(_stripNoise(title)).replace(/\s+/g, ' ').trim(),
@@ -318,10 +343,14 @@ class MatchAggregator {
       }
       if (kickoff === 0) return true; // Keep if we don't know the time
 
-      // Keep matches up to 24 hours after kickoff, except TimStreams which we keep for 48 hours (VODs)
-      const isTimStreams = match.sources && match.sources.some(s => s.source === 'timstreams');
-      const expiryWindowMs = isTimStreams ? (48 * 3600 * 1000) : (24 * 3600 * 1000);
-      return now <= kickoff + expiryWindowMs;
+      // Keep matches up to 24 hours after kickoff. ReplayZone entries are
+      // archive sessions rather than fixtures, so they get an explicit, bounded
+      // retention window instead of an open-ended exemption.
+      const expiryWindowMs = 24 * 3600 * 1000;
+      const replayExpiryWindowMs = REPLAY_RETENTION_DAYS * 24 * 3600 * 1000;
+      const isReplayZone = match.sources && match.sources.some(s => s.source === 'replayzone');
+      const windowMs = isReplayZone ? replayExpiryWindowMs : expiryWindowMs;
+      return now <= kickoff + windowMs;
     });
 
     console.log(`[MatchAggregator] Sync complete. Merged ${activeMatches.length} active events.`);

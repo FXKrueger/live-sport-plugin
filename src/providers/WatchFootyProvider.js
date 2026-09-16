@@ -44,11 +44,18 @@ class WatchFootyProvider extends BaseProvider {
           }
 
           let status = 'upcoming';
-          
+
           if (item.status === 'in' || item.status === 'live') {
             status = 'live';
           } else if (item.status === 'post' || item.status === 'post-final' || item.status === 'postponed' || item.status === 'cancelled') {
             continue; // Skip ended matches
+          } else if (item.status === 'pre') {
+            // WatchFooty reports 'pre' for a fixture that has NOT kicked off, and
+            // refreshes it every sync. Preserve it distinctly: collapsing it into
+            // the generic 'upcoming' bucket lost the only reliable signal that a
+            // delayed match had not actually started, so it showed as LIVE once
+            // its nominal kickoff time passed.
+            status = 'pre';
           }
 
           const matchTime = item.timestamp ? parseTimezone(item.timestamp, 'UTC') : Date.now();
@@ -56,12 +63,7 @@ class WatchFootyProvider extends BaseProvider {
           // Map dynamic sports directly from the API
           const category = this.normalizeCategory(item.sport);
 
-          const posterUrl = item.poster ? (
-            item.poster.startsWith('//') ? `https:${item.poster}` :
-            item.poster.startsWith('http') ? item.poster :
-            item.poster.startsWith('/') ? `https://api.watchfooty.st${item.poster}` :
-            `https://api.watchfooty.st/${item.poster}`
-          ) : null;
+          const posterUrl = item.poster ? new URL(item.poster, 'https://api.watchfooty.st').toString() : null;
 
           matches.push(new MatchEntity({
             id: `wf_${matchId}`,
@@ -88,9 +90,36 @@ class WatchFootyProvider extends BaseProvider {
       const match = Array.isArray(data) ? data[0] : data;
       
       if (match && match.streams && Array.isArray(match.streams)) {
+        // ─── Dead-variant negative cache ─────────────────────────────────────
+        // Each embed variant costs up to impit 6s + undici 20s + native 30s = ~56s
+        // when the host is unreachable. A match commonly exposes 8+ variants, and
+        // a failed resolve was retried in full on every request, so the same
+        // known-dead URLs cost minutes repeatedly.
+        // A variant that fails is now remembered and skipped instantly; entries
+        // expire so a transient outage is not treated as permanent.
+        if (!WatchFootyProvider._deadVariants) {
+          WatchFootyProvider._deadVariants = new Map(); // url -> expiryMs
+        }
+        const DEAD_TTL_MS = Number(process.env.WATCHFOOTY_DEAD_TTL_MS || 5 * 60 * 1000);
+        const dead = WatchFootyProvider._deadVariants;
+        const now = Date.now();
+        // opportunistic prune
+        if (dead.size > 200) {
+          for (const [k, v] of dead) if (v <= now) dead.delete(k);
+        }
+
         let idx = 0;
+        let skipped = 0;
         for (const s of match.streams) {
           if (s.url) {
+            // Skip variants already known to be unreachable (embed URLs only;
+            // direct media URLs are cheap and always attempted).
+            const isEmbed = !s.url.includes('.m3u8') && !s.url.includes('.mp4');
+            if (isEmbed) {
+              const exp = dead.get(s.url);
+              if (exp && exp > now) { skipped++; idx++; continue; }
+              if (exp) dead.delete(s.url);
+            }
             const isDirect = s.url.includes('.m3u8') || s.url.includes('.mp4');
             const entityParams = {
               name: `WatchFooty`,
@@ -154,6 +183,7 @@ class WatchFootyProvider extends BaseProvider {
                 }
               } catch (e) {
                 console.warn(`[WatchFootyProvider] Iframe detection failed for ${s.url}: ${e.message}`);
+              dead.set(s.url, Date.now() + DEAD_TTL_MS);
               }
 
               if (!resolvedViaIframe) {
@@ -185,6 +215,9 @@ class WatchFootyProvider extends BaseProvider {
       }
     } catch (err) {
       console.error(`[${this.name}] resolveStream failed for ${sourceId}:`, err.message);
+    }
+    if (skipped > 0) {
+      console.log(`[WatchFootyProvider] Skipped ${skipped} known-dead embed variant(s) for ${sourceId}`);
     }
     return streams;
   }

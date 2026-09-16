@@ -138,37 +138,52 @@ class StreamFreeProvider extends BaseProvider {
           }
           const tokens = JSON.parse(tokenMatch[1]);
 
-          // Pick best quality: prefer stream-status confirmed ones, fallback to all sorted by res
+          // Emit the top few qualities rather than only the single "best" one.
+          // Upstream is inconsistent about which resolutions actually exist: for
+          // the same channel 2160p commonly answers 404/403 while 1080p serves
+          // normally (observed on RedZone and Willow). Committing to the highest
+          // resolution meant one dead top rung produced ZERO working streams, even
+          // though a lower rung was live. Downstream health-checking (verifyStreams)
+          // drops whichever of these are dead, so emitting several is safe and
+          // guarantees a working option survives whenever one exists.
           const tokenKeys = Object.keys(tokens).filter(k => tokens[k] && tokens[k]._t);
           const confirmed = tokenKeys.filter(q => src.qualities[q]);
           const ordered = (confirmed.length ? confirmed : tokenKeys).sort((a, b) => resScore(b) - resScore(a));
-          const bestQuality = ordered[0] || null;
-          const t = bestQuality ? tokens[bestQuality] : null;
-          if (!bestQuality || !t) continue;
+          const qualityRungs = ordered.slice(0, 3);
+          if (qualityRungs.length === 0) continue;
 
-          // Build the .m3u8 URL — path uses key + quality + source suffix
-          let targetUrl = '';
-          if (streamKeyData && streamKeyData.is_external && streamKeyData.external_url) {
-            targetUrl = streamKeyData.external_url;
-          } else {
-            const serverName = (streamKeyData && streamKeyData.server_name) ? streamKeyData.server_name : 'origin';
-            const pathSegment = `${sourceId}${bestQuality}${src.suffix}`;
-            const hlsPath = serverName !== 'origin'
-              ? `https://streamfree.top/live-cdn/${pathSegment}/index.m3u8`
-              : `https://streamfree.top/live-origin/${pathSegment}/index.m3u8`;
-            targetUrl = `${hlsPath}?_t=${t._t}&_e=${t._e}&_n=${t._n}`;
+          const serverName = (streamKeyData && streamKeyData.server_name) ? streamKeyData.server_name : 'origin';
+
+          for (const quality of qualityRungs) {
+            const t = tokens[quality];
+            if (!t || !t._t) continue;
+
+            // Build the .m3u8 URL — path uses key + quality + source suffix
+            // (template verified against the upstream embed page script).
+            let targetUrl = '';
+            if (streamKeyData && streamKeyData.is_external && streamKeyData.external_url) {
+              targetUrl = streamKeyData.external_url;
+            } else {
+              const pathSegment = `${sourceId}${quality}${src.suffix}`;
+              const hlsPath = serverName !== 'origin'
+                ? `https://streamfree.top/live-cdn/${pathSegment}/index.m3u8`
+                : `https://streamfree.top/live-origin/${pathSegment}/index.m3u8`;
+              targetUrl = `${hlsPath}?_t=${t._t}&_e=${t._e}&_n=${t._n}`;
+            }
+
+            const proxyUrl = `${BASE_URL}/api/manifest?url=${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(embedUrl)}&origin=https://streamfree.top&proxyChunks=1`;
+            const label = src.suffix
+              ? `StreamFree S${src.srcNum} (${quality})`
+              : `StreamFree (${quality})`;
+
+            streams.push(new StreamEntity({
+              name: 'StreamFree',
+              title: label,
+              url: proxyUrl,
+              behaviorHints: { notWebReady: true },
+              resolution: quality
+            }));
           }
-
-          const proxyUrl = `${BASE_URL}/api/manifest?url=${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(embedUrl)}&origin=https://streamfree.top`;
-          const label = src.suffix ? `StreamFree S${src.srcNum} (${bestQuality})` : `StreamFree (${bestQuality})`;
-
-          streams.push(new StreamEntity({
-            name: 'StreamFree',
-            title: label,
-            url: proxyUrl,
-            behaviorHints: { notWebReady: true },
-            resolution: bestQuality
-          }));
         } catch (srcErr) {
           console.warn(`[StreamFree] Failed source ${src.srcNum} for ${sourceId}:`, srcErr.message);
         }

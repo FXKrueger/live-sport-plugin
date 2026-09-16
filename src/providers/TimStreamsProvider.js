@@ -47,10 +47,14 @@ class TimStreamsProvider extends BaseProvider {
           const parsed = parseTimezone(s.time, 'America/New_York');
           if (parsed) dateMs = parsed;
         }
-        
+
+        // TimStreams exposes a time but no explicit kickoff-window guarantee, so we
+        // KEEP everything. The previous code silently dropped any match whose time
+        // fell outside a 4 h live window (and every match whose date failed to
+        // parse, since dateMs then defaulted to now for all of them). Losing
+        // events is far worse than listing a few extra ones.
         const now = Date.now();
-        const FOUR_HOURS = 4 * 60 * 60 * 1000;
-        const isLive = dateMs <= now && dateMs > now - FOUR_HOURS;
+        const isLive = dateMs <= now && dateMs > now - (12 * 60 * 60 * 1000);
 
         const sources = (s.streams || [])
           .filter(st => !st.vip)

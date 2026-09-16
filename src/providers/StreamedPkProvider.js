@@ -107,12 +107,7 @@ class StreamedPkProvider extends BaseProvider {
             });
           }
 
-          const posterUrl = item.poster ? (
-            item.poster.startsWith('//') ? `https:${item.poster}` :
-            item.poster.startsWith('http') ? item.poster :
-            item.poster.startsWith('/') ? `https://streamed.pk${item.poster}` :
-            `https://streamed.pk/${item.poster}`
-          ) : '';
+          const posterUrl = item.poster ? new URL(item.poster, 'https://streamed.pk').toString() : '';
           const homeBadge = item.teams && item.teams.home && item.teams.home.badge ? `https://streamed.pk/api/images/proxy/${item.teams.home.badge}` : '';
           const awayBadge = item.teams && item.teams.away && item.teams.away.badge ? `https://streamed.pk/api/images/proxy/${item.teams.away.badge}` : '';
 

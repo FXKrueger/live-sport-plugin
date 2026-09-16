@@ -54,18 +54,21 @@ async function safeFetch(url, opts = {}) {
   const impit = getImpit();
 
   // -- Path A: impit ---------------------------------------------------------
-    // -- Path A: impit ---------------------------------------------------------
   if (impit) {
     let lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
+      let timer = null;
       try {
         const res = await Promise.race([
           impit.fetch(url, { method, headers, body }),
-          new Promise((_, rej) =>
-            setTimeout(() => rej(new Error(`impit timeout ${timeoutMs}ms`)), timeoutMs)
-          ),
+          new Promise((_, rej) => {
+            timer = setTimeout(() => rej(new Error(`impit timeout ${timeoutMs}ms`)), timeoutMs);
+          }),
         ]);
         const textData = await res.text();
+        if (res.status === 400 && url.includes('ok.ru')) {
+           throw new Error('ok.ru blocked impit');
+        }
         return {
           ok: res.status >= 200 && res.status < 300,
           status: res.status,
@@ -77,6 +80,10 @@ async function safeFetch(url, opts = {}) {
         if (attempt < 3) {
            await new Promise(r => setTimeout(r, 800 * attempt));
         }
+      } finally {
+        // Always clear the timeout so a fast response does not leave a pending
+        // timer holding the event loop (timer churn under load).
+        if (timer) clearTimeout(timer);
       }
     }
     console.warn(`[impitClient] impit fetch failed after 3 retries (${lastErr.message}), falling back to undici for: ${url}`);

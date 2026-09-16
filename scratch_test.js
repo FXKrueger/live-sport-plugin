@@ -1,24 +1,28 @@
-const TimStreamsProvider = require('./src/providers/TimStreamsProvider');
+const container = require('./src/container');
+const streams = require('./src/streams');
+const catalog = require('./src/catalog');
+const aggregator = container.resolve('matchAggregator');
 
 async function test() {
-  const provider = new TimStreamsProvider({ circuitBreaker: { wrap: (n, f) => { f.fire = f; return f; } } });
-  
-  // mock proxyFetch if needed, but it inherits from BaseProvider so we should provide mock opts or let it use default
-  
-  console.log('Fetching matches from TimStreams...');
-  const matches = await provider.getMatches();
-  
-  console.log(`Found ${matches.length} matches.`);
-  if (matches.length > 0) {
-    console.log('Sample Match:', JSON.stringify(matches[0], null, 2));
+    console.log('Fetching replays catalog...');
+    // We must ensure the matches are in cache first
+    await aggregator.syncMatches();
     
-    // Test resolving a stream
-    if (matches[0].sources.length > 0) {
-        console.log('Resolving first source...');
-        const stream = await provider.resolveStream(matches[0].sources[0].id, matches[0].category, matches[0].title);
-        console.log('Stream result:', JSON.stringify(stream, null, 2));
+    const replays = await catalog.handleCatalog('tv', 'nuvio_sports_replays');
+    
+    const targetMatch = replays.metas.find(m => m.name && m.name.includes('Penrith Panthers') && m.name.includes('Sydney Roosters'));
+    
+    if (!targetMatch) {
+        console.log('Target match not found in catalog');
+        return;
     }
-  }
+    
+    console.log(`Found match: ${targetMatch.id} - ${targetMatch.name}`);
+    
+    console.log(`Resolving stream for ${targetMatch.id}...`);
+    const result = await streams.handleStream('tv', targetMatch.id);
+    
+    console.log(JSON.stringify(result, null, 2));
 }
 
 test().catch(console.error);

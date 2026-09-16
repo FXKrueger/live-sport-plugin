@@ -45,18 +45,34 @@ class BaseProvider {
     cat = String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
     if (cat.includes('americanfootball') || cat.includes('nfl') || cat.includes('afl') || cat.includes('gridiron')) return 'american_football';
     if (cat.includes('soccer') || cat.includes('football')) return 'football';
-    if (cat.includes('motor') || cat.includes('racing') || cat.includes('cycling') || cat.includes('f1')) return 'motorsport';
+    // 'mixedmartialarts' must be caught before the generic checks below — the
+    // upstream label "Mixed Martial Arts" normalized to 'mixedmartialarts', a
+    // string that matched no catalog id and no live-window duration, so every
+    // MMA event was silently invisible (TimStreams was emitting this shape).
+    if (cat.includes('mixedmartialart') || cat.includes('martialart') || cat.includes('mmaglobal')) return 'mma';
     if (cat.includes('fight') || cat.includes('mma') || cat.includes('boxing') || cat.includes('wrestling') || cat.includes('knuckle') || cat.includes('ufc')) return 'mma';
+    if (cat.includes('formula1') || cat.includes('motogp') || cat.includes('moto') || cat.includes('motor') || cat.includes('racing') || cat.includes('cycling') || cat.includes('f1')) return 'motorsport';
     if (cat.includes('basketball') || cat.includes('nba')) return 'basketball';
-    if (cat.includes('golf')) return 'golf';
+    if (cat.includes('pga') || cat.includes('golf')) return 'golf';
     if (cat.includes('rugby')) return 'rugby';
     if (cat.includes('cricket')) return 'cricket';
     if (cat.includes('tennis')) return 'tennis';
     if (cat.includes('hockey') || cat.includes('nhl')) return 'hockey';
     if (cat.includes('baseball') || cat.includes('mlb')) return 'baseball';
     if (cat.includes('darts')) return 'darts';
+    if (cat.includes('ncaa') || cat.includes('college')) return 'college';
     if (cat.includes('liveshow') || cat.includes('uncategorized')) return 'other';
-    return cat;
+
+    // Canonical allowlist. Anything the catalogs do not know about belongs in
+    // 'other' (rendered as "Other Sports") rather than under its own ad-hoc id,
+    // which no catalog queries and which therefore hides the event entirely.
+    const CANONICAL = new Set([
+      'football', 'cricket', 'basketball', 'motorsport', 'hockey', 'baseball',
+      'mma', 'golf', 'tennis', 'rugby', 'american_football', 'darts',
+      'college', 'networks', 'other'
+    ]);
+    if (CANONICAL.has(cat)) return cat;
+    return 'other';
   }
 
   /**

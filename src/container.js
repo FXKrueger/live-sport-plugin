@@ -1,3 +1,4 @@
+const ReplayZoneProvider = require('./providers/ReplayZoneProvider');
 const { createContainer, asClass, asValue, InjectionMode } = require('awilix');
 
 const CacheService = require('./services/CacheService');
@@ -9,7 +10,6 @@ const StreamScoringService = require('./services/StreamScoringService');
 const StreamFreeProvider = require('./providers/StreamFreeProvider');
 const TimStreamsProvider = require('./providers/TimStreamsProvider');
 // const IptvOrgProvider = require('./providers/IptvOrgProvider'); // disabled: 24/7 channels removed
-const SportyHunterProvider = require('./providers/SportyHunterProvider');
 
 const WatchFootyProvider = require('./providers/WatchFootyProvider');
 const CdnLiveProvider = require('./providers/CdnLiveProvider');
@@ -28,7 +28,8 @@ const container = createContainer({
 
 // Register Core Services
 container.register({
-  cacheService: asClass(CacheService).singleton(),
+  replayzoneProvider: asClass(ReplayZoneProvider).singleton(),
+    cacheService: asClass(CacheService).singleton(),
   circuitBreaker: asClass(CircuitBreakerService).singleton(),
   m3u8Parser: asClass(M3U8ParserService).singleton(),
   cronService: asClass(CronService).singleton(),
@@ -46,7 +47,6 @@ container.register({
   streamFreeProvider: asClass(StreamFreeProvider).singleton(),
   timStreamsProvider: asClass(TimStreamsProvider).singleton(),
   // iptvOrgProvider: asClass(IptvOrgProvider).singleton(), // disabled: 24/7 channels removed
-  sportyHunterProvider: asClass(SportyHunterProvider).singleton(),
 
   watchFootyProvider: asClass(WatchFootyProvider).singleton(),
   cdnLiveProvider: asClass(CdnLiveProvider).singleton(),

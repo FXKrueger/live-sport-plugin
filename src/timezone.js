@@ -32,6 +32,16 @@ function parseTimezone(dateValue, timeZone = 'UTC') {
     return Number.isFinite(t) && t > 0 ? t : null;
   }
 
+  // An ISO date-time WITHOUT an explicit offset (e.g. "2026-09-15T19:30:00") is
+  // already unambiguous enough to parse directly. Note the deliberate ordering:
+  // this must come BEFORE the tz-conversion logic below, because that logic would
+  // otherwise re-add the timezone offset and shift a correct timestamp by the
+  // offset's worth (double-counting).
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(str)) {
+    const t = new Date(str + 'Z').getTime();
+    return Number.isFinite(t) && t > 0 ? t : null;
+  }
+
   // Replace spaces with T for proper ISO format compatibility
   let cleanStr = str.replace(' ', 'T');
   

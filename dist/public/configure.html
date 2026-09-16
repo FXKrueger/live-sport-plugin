@@ -299,6 +299,14 @@
     <a href="#" id="installBtn" class="btn">INSTALL ADDON</a>
     <button id="copyBtn" class="btn" style="background: #333; margin-top: 12px; font-size: 14px;">COPY LINK (FOR NUVIO APP)</button>
 
+    <div class="input-group" style="margin-top: 12px;">
+      <label>Nuvio Link &mdash; select &amp; copy manually if the button above does nothing (always available, no clipboard permission needed)</label>
+      <input type="text" id="manualUrl" readonly spellcheck="false" autocomplete="off"
+             title="Click to select the whole link"
+             style="font-family: monospace; font-size: 13px; user-select: all;"
+             onclick="this.select()" onfocus="this.select()">
+    </div>
+
     <div style="margin-top: 25px; padding: 20px; background: rgba(255, 95, 95, 0.06); border: 1px solid rgba(255, 95, 95, 0.2); border-radius: 16px;">
       <p style="margin: 0 0 16px 0; font-size: 14px; font-weight: 700; color: #fff; text-align: center; letter-spacing: 0.5px;">
         ❤️ Donation Center
@@ -350,6 +358,7 @@
   <script>
     const btn = document.getElementById('installBtn');
     const copyBtn = document.getElementById('copyBtn');
+    const manualUrl = document.getElementById('manualUrl');
     const input = document.getElementById('teams');
     const checkboxes = document.querySelectorAll('#sportsGrid input[type="checkbox"]');
     const sourceCheckboxes = document.querySelectorAll('#sourcesGrid input[type="checkbox"]');
@@ -501,21 +510,68 @@
       }
 
       currentManifestUrl = manifestUrl;
+      // Keep the manual field in sync — it is the guaranteed path on
+      // plain-HTTP self-hosted instances where the Clipboard API is unavailable.
+      if (manualUrl) manualUrl.value = manifestUrl;
       const installUrl = manifestUrl.replace(/^https?:\/\//, 'stremio://');
       btn.href = installUrl;
     }
 
-    copyBtn.addEventListener('click', (e) => {
+    // navigator.clipboard only exists in a secure context (HTTPS or http://localhost).
+    // Self-hosted Docker instances reached at http://192.168.x.x:7000 are NOT secure
+    // contexts, so fall back to the legacy textarea + document.execCommand('copy') path.
+    function legacyCopy(text) {
+      let ta = null;
+      try {
+        ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        return document.execCommand('copy') === true;
+      } catch (err) {
+        return false;
+      } finally {
+        if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+      }
+    }
+
+    function flashCopyButton(ok) {
+      const originalText = copyBtn.innerText;
+      const originalBg = copyBtn.style.background;
+      copyBtn.innerText = ok ? 'COPIED TO CLIPBOARD!' : 'COPY FAILED \u2014 SELECT & COPY MANUALLY';
+      copyBtn.style.background = ok ? '#10b981' : '#b91c1c';
+      setTimeout(() => {
+        copyBtn.innerText = originalText;
+        copyBtn.style.background = originalBg || '#333';
+      }, 2000);
+    }
+
+    copyBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      navigator.clipboard.writeText(currentManifestUrl).then(() => {
-        const originalText = copyBtn.innerText;
-        copyBtn.innerText = 'COPIED TO CLIPBOARD!';
-        copyBtn.style.background = '#10b981';
-        setTimeout(() => {
-          copyBtn.innerText = originalText;
-          copyBtn.style.background = '#333';
-        }, 2000);
-      });
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(currentManifestUrl);
+          ok = true;
+        } else {
+          ok = legacyCopy(currentManifestUrl);
+        }
+      } catch (err) {
+        // Clipboard permission denied / API present but unusable — try the legacy path.
+        ok = legacyCopy(currentManifestUrl);
+      }
+      if (!ok && manualUrl) {
+        // Never leave the user with no way forward: preselect the manual field.
+        try { manualUrl.focus(); manualUrl.select(); } catch (err) {}
+      }
+      flashCopyButton(ok);
     });
 
     input.addEventListener('input', updateLink);

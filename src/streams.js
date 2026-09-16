@@ -2,11 +2,11 @@ const container = require('./container');
 
 // Source selection (shared by handleStream and prewarmMatch)
 function selectSources(matchSources, config) {
-  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'watchfooty': 2, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'streamfree': 8, 'timstreams': 9, 'sportyhunter': 12, 'streamsports': 13, 'iptv-org': 14, 'embedindia': 15 };
+  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'replayzone': 2, 'watchfooty': 2, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'streamfree': 8, 'timstreams': 9, 'streamsports': 13, 'iptv-org': 14, 'embedindia': 15 };
   const sortedSources = [...matchSources].sort((a, b) => {
     // Unknown sources that are not known fallback providers are likely new
     // Streamed.pk sources - priority 1.5 keeps them near the top.
-    const getPriority = (src) => SOURCE_PRIORITY[src] ?? (['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'sportyhunter', 'streamsports', 'iptv-org'].includes(src) ? 99 : 1.5);
+    const getPriority = (src) => SOURCE_PRIORITY[src] ?? (['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'replayzone'].includes(src) ? 99 : 1.5);
     const pa = getPriority(a.source);
     const pb = getPriority(b.source);
     if (pa !== pb) return pa - pb;
@@ -15,7 +15,7 @@ function selectSources(matchSources, config) {
 
   if (config && typeof config.sources === 'string' && config.sources !== 'none') {
     const enabled = config.sources.split(',');
-    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'sportyhunter', 'streamsports', 'iptv-org', 'embedindia', 'embedst', 'streamedpk'];
+    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'embedindia', 'embedst', 'streamedpk', 'replayzone'];
     return sortedSources.filter(src => {
       if (src.source.startsWith('yaml_')) return true;
       const isFallback = KNOWN_FALLBACKS.includes(src.source);
@@ -26,7 +26,7 @@ function selectSources(matchSources, config) {
     });
   }
 
-  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'sportyhunter', 'streamsports', 'iptv-org', 'embedst', 'streamedpk'];
+  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'embedst', 'streamedpk', 'replayzone'];
   return sortedSources.filter(src => {
     if (src.source.startsWith('yaml_')) return true;
     return KNOWN_FALLBACKS.includes(src.source);
@@ -47,10 +47,6 @@ async function resolveSource(src, match, config) {
     } else if (sourceName === 'timstreams') {
       const provider = container.resolve('timStreamsProvider');
       resStreams = await provider.resolveStream(src.id, match.category, match.title);
-    } else if (sourceName === 'sportyhunter') {
-      const provider = container.resolve('sportyHunterProvider');
-      resStreams = await provider.resolveStream(src.id, match.category, match.title);
-
     } else if (sourceName === 'watchfooty') {
       const provider = container.resolve('watchFootyProvider');
       resStreams = await provider.resolveStream(src.id, match.category, match.title);
@@ -88,6 +84,9 @@ async function resolveSource(src, match, config) {
     } else if (sourceName === 'streamedpk') {
       const provider = container.resolve('streamedPkProvider');
       resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
+    } else if (sourceName === 'replayzone') {
+      const provider = container.resolve('replayzoneProvider');
+      resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
     } else if (sourceName.startsWith('yaml_')) {
       const yamlProviders = container.resolve('yamlProviders');
       const pName = sourceName.replace('yaml_', '');
@@ -115,6 +114,18 @@ async function resolveSource(src, match, config) {
 // impit is tried first for browser TLS fingerprinting; undici is the automatic fallback.
 const { safeFetch: _safeFetch } = require('./impitClient');
 
+// Proxied /api/manifest URLs wrap an upstream token that expires on its own
+// schedule. Tag the URL with the resolve-cache key that produced it so the
+// manifest proxy can evict that entry the moment upstream reports it dead,
+// forcing the next click to re-mint a fresh token instead of serving a stale
+// URL for the remainder of the TTL. Absent/!manifest URLs pass through untouched.
+function withResolveKey(url, cacheKey) {
+  if (!url || !cacheKey || typeof url !== 'string') return url;
+  if (!url.includes('/api/manifest?')) return url;
+  if (/[?&]rck=/.test(url)) return url;
+  return url + '&rck=' + encodeURIComponent(cacheKey);
+}
+
 
 // --- Stream Health Verification ---
 // Pings each direct stream once and drops dead ones (404/403/5xx, or 200 bodies
@@ -124,8 +135,8 @@ const { safeFetch: _safeFetch } = require('./impitClient');
 async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
 
   const checkedStreams = await Promise.all(streams.map(async (s) => {
-    // We only pre-flight check direct streams (m3u8 urls). Web player links are kept blindly.
-    if (!s.url || s.url.includes('/watch?')) return s;
+    // We only pre-flight check direct streams (m3u8 urls). Web player links or direct VODs are kept blindly.
+    if (!s.url || s.url.includes('/watch?') || s.url.includes('pixeldrain.com') || (s.behaviorHints && s.behaviorHints.notWebReady === false)) return s;
 
     let targetUrl = s.url;
     let referer = '';
@@ -270,17 +281,71 @@ async function handleStream(type, id, config) {
 
   const resolveCache = container.resolve('streamResolveCache');
 
-  const resolvePromises = activeSources.map(async (src) => {
+  // ─── Concurrent resolution with a bounded, time-boxed wait ──────────────
+  // Kicked off together, so the cost is the SLOWEST source rather than the SUM.
+  // Returns as soon as usable streams exist, bounded by a soft deadline;
+  // anything still running keeps going and lands in the resolve cache for the
+  // next request. Previously every source had to settle before anything was
+  // returned, so one slow provider (WatchFooty's embed chain: ~56s/variant)
+  // stalled the whole response.
+  const SOFT_DEADLINE_MS = Number(process.env.STREAM_SOFT_DEADLINE_MS || 6000);
+  const HARD_DEADLINE_MS = Number(process.env.STREAM_HARD_DEADLINE_MS || 15000);
+
+  const inFlight = [];        // { key, promise } for the fallback wait
+  const races = activeSources.map((src) => {
     const key = `${src.source}:${matchId}:${src.id}`;
-    const minted = await resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, config, key));
-    return minted.map((s) => ({ ...s, _cacheKey: key }));
+    const promise = resolveCache
+      .getOrCreate(key, () => mintVerifiedSources(src, match, config, key))
+      .then((minted) => (Array.isArray(minted) ? minted.map((st) => ({ ...st, _cacheKey: key })) : []))
+      .catch(() => []);
+    inFlight.push({ key, promise });
+    // Wrap so we can tell "settled in time" from "still running".
+    return Promise.race([
+      promise.then((value) => ({ late: false, value })),
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ late: true, value: [] }), SOFT_DEADLINE_MS)
+      ),
+    ]);
   });
 
-  const results = await Promise.allSettled(resolvePromises);
-  for (const result of results) {
-    if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-      streams.push(...result.value);
+  const raced = await Promise.allSettled(races);
+  let lateCount = 0;
+  for (const r of raced) {
+    if (r.status !== 'fulfilled') continue;
+    if (r.value.late) { lateCount++; continue; }
+    if (Array.isArray(r.value.value)) streams.push(...r.value.value);
+  }
+
+  // Never return an empty list merely because we were impatient: if nothing
+  // usable arrived in time, wait for the remainder up to the hard ceiling.
+  if (streams.length === 0 && inFlight.length > 0) {
+    const remaining = Math.max(0, HARD_DEADLINE_MS - SOFT_DEADLINE_MS);
+    await Promise.race([
+      Promise.allSettled(inFlight.map((f) => f.promise)),
+      new Promise((r) => setTimeout(r, remaining)),
+    ]);
+    for (const f of inFlight) {
+      // Attach a handler first so a late rejection can never be unhandled.
+      const v = await f.promise.catch(() => null);
+      if (Array.isArray(v)) streams.push(...v);
     }
+    lateCount = 0;
+  } else if (lateCount > 0) {
+    console.log(`[streams.js] Early return for ${matchId}: ${lateCount} source(s) still resolving (will be cached)`);
+  }
+  // Withhold per-team 24/7 channels until the fixture is actually in its
+  // playable window (see suppressPreMatchTeamChannels). Applied to the assembled
+  // set so it covers every source, not just streamsports99.
+  //
+  // NOTE: the helper may return the SAME array reference (when nothing needed
+  // filtering, or when filtering would have emptied it). Only replace the
+  // contents when it returned a genuinely different array — otherwise clearing
+  // in place and then spreading the same reference yields zero streams.
+  const playableStreams = suppressPreMatchTeamChannels(streams, match);
+  if (playableStreams !== streams) {
+    console.log(`[streams.js] Withheld ${streams.length - playableStreams.length} pre-match 24/7 channel(s) for ${matchId}`);
+    streams.length = 0;
+    streams.push(...playableStreams);
   }
 
   // --- Inject relevant 24/7 channels based on category ---
@@ -321,13 +386,17 @@ async function handleStream(type, id, config) {
   
   const niceNames = {
     streamfree: 'StreamFree', timstreams: 'TimStreams',
-    sportyhunter: 'SportyHunter', streamsports: 'StreamSports',
+    streamsports: 'StreamSports',
     'iptv-org': 'Direct IPTV', 'streamsports99': 'StreamSports99',
     'streamic': 'Streamic',
-    'embedindia': 'EmbedIndia', 'embedst': 'Embed.st', 'streamedpk': 'Streamed.pk'
+    'embedindia': 'EmbedIndia', 'embedst': 'Embed.st', 'streamedpk': 'Streamed.pk',
+    'replayzone': 'ReplayZone'
   };
 
   streams.forEach(s => {
+    // Tag proxied manifest URLs with their resolve-cache key (see withResolveKey).
+    s.url = withResolveKey(s.url, s._cacheKey);
+
     let quality = s.resolution || s.quality || 'Auto';
     if (String(quality).includes('x')) {
        const h = String(quality).split('x')[1];
@@ -341,7 +410,6 @@ async function handleStream(type, id, config) {
     let providerName = niceNames[s._source] || niceNames[Object.keys(niceNames).find(k => s.title && s.title.toLowerCase().includes(k))] || 'Streamed.pk';
     
     if (s.title && s.title.toLowerCase().includes('timstreams')) providerName = 'TimStreams';
-    else if (s.title && s.title.toLowerCase().includes('sporty')) providerName = 'SportyHunter';
     else if (s.title && s.title.toLowerCase().includes('streamfree')) providerName = 'StreamFree';
     else if (s.title && s.title.toLowerCase().includes('watchfooty')) providerName = 'WatchFooty';
     else if (s.title && s.title.toLowerCase().includes('cdnlive')) providerName = 'CDNLiveTV';
@@ -393,7 +461,6 @@ async function handleStream(type, id, config) {
       else if (providerName === 'CDNLiveTV') referer = 'https://cdnlivetv.tv/';
       else if (providerName === 'Streamic') referer = 'https://streamic.st/';
       else if (providerName === 'StreamSports99' || providerName === 'StreamSports') referer = 'https://streamsports99.fun/';
-      else if (providerName === 'SportyHunter') referer = 'https://sportyhunter.xyz/';
       
       if (referer) {
         if (!s.behaviorHints.proxyHeaders) {
@@ -413,6 +480,22 @@ async function handleStream(type, id, config) {
     }
   });
 
+  // ─── Prefer direct streams over web fallbacks ─────────────────────────
+  // A web embed is a last resort. When a working direct stream exists it is the
+  // better option on every client, and on TV clients the iframe embed is the one
+  // that fails outright, so web fallbacks are hidden whenever a direct stream is
+  // available. If NO direct stream survives, the web fallbacks are kept — that is
+  // the only remaining way to watch, so they must not be dropped wholesale.
+  const directOnly = streams.filter(s => s.name === '⚡ Direct Stream');
+  if (directOnly.length > 0 && directOnly.length < streams.length) {
+    const hidden = streams.length - directOnly.length;
+    // filter() returns a NEW array, so it is safe to clear and refill in place
+    // (keeps the caller's reference valid).
+    streams.length = 0;
+    streams.push(...directOnly);
+    console.log(`[streams.js] Hid ${hidden} web fallback(s) — ${directOnly.length} direct stream(s) available`);
+  }
+
   // Sort streams: Direct streams first, then by score descending
   streams.sort((a, b) => {
     const aIsDirect = a.name === '⚡ Direct Stream' ? 1 : 0;
@@ -431,7 +514,54 @@ async function handleStream(type, id, config) {
   };
 }
 
+// ─── Pre-match stream suppression ────────────────────────────────────────
+// Some providers (notably streamsports99) publish PER-TEAM 24/7 channels
+// alongside the actual match feed — e.g. "MLB | Toronto Blue Jays". Those
+// endpoints are live around the clock, so a fixture that has not started yet
+// still "resolves" to working streams minutes or hours early, which makes an
+// upcoming match look live and watchable when it is neither.
+//
+// These labels only appear on a per-TEAM IPTV listing, never on a real match
+// feed, so any stream whose label matches is withheld until the fixture is
+// actually in its playable window.
+//
+// NOTE: this lives here (not in index.js) because handleStream is the consumer.
+const TEAM_CHANNEL_LABEL_RE = /\bMLB\s*\|\s*/i;
+const PREMATCH_LEAD_MS = 10 * 60 * 1000; // allow normal pre-kickoff lead tuning
+
+function isLikelyPerTeamChannel(stream) {
+  try {
+    const label = String((stream && (stream.title || stream.name)) || '');
+    return TEAM_CHANNEL_LABEL_RE.test(label);
+  } catch (_) {
+    return false;
+  }
+}
+
+// Keep every non-team-channel stream; keep team channels only once the fixture
+// is genuinely under way (or inside its normal pre-kickoff lead window).
+// Returns the SAME array reference when nothing needs changing, so callers must
+// not assume it is a fresh array.
+function suppressPreMatchTeamChannels(streams, match) {
+  try {
+    if (!Array.isArray(streams) || streams.length === 0) return streams;
+    const kickoff = match && match.date ? Number(match.date) : 0;
+    // No usable kickoff time => not a scheduled fixture. Keep everything.
+    if (!Number.isFinite(kickoff) || kickoff <= 0) return streams;
+    if (Date.now() >= kickoff - PREMATCH_LEAD_MS) return streams;
+    const kept = streams.filter(s => !isLikelyPerTeamChannel(s));
+    // Never return nothing just because every option happened to be a team feed;
+    // that would turn a display quirk into a silent outage.
+    return kept.length > 0 ? kept : streams;
+  } catch (_) {
+    return streams;
+  }
+}
+
 module.exports = {
   handleStream,
-  prewarmMatch
+  prewarmMatch,
+  // Exported so the manifest proxy can transparently re-mint a single expired
+  // source without going through the full stream-list path (see src/index.js).
+  resolveSource
 };
