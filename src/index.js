@@ -208,11 +208,30 @@ app.get('/img', async (req, res) => {
     if (embed && !entry.contentType.includes('svg')) {
       const bg = /^([0-9a-fA-F]{6})$/.test(String(color)) ? `#${color}` : '#333333';
       const b64 = entry.buffer.toString('base64');
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
-  <rect width="800" height="450" fill="#111111"/>
-  <rect x="0" y="0" width="800" height="10" fill="${bg}"/>
-  <rect x="0" y="440" width="800" height="10" fill="${bg}"/>
-  <image href="data:${entry.contentType};base64,${b64}" x="50%" y="50%" width="300" height="300" transform="translate(-150, -150)"/>
+      const cleanTitle = String(text || '').replace(/\b(24\/7|live|stream|raw|hd)\b/gi, '').trim();
+      const showTitle = cleanTitle.length > 0 && cleanTitle.length <= 36;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="800" height="450" viewBox="0 0 800 450">
+  <defs>
+    <linearGradient id="cardBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#191c24"/>
+      <stop offset="50%" stop-color="#111319"/>
+      <stop offset="100%" stop-color="#090a0d"/>
+    </linearGradient>
+    <radialGradient id="spotlight" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <filter id="logoShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.75"/>
+    </filter>
+  </defs>
+  <rect width="800" height="450" fill="url(#cardBg)"/>
+  <rect width="800" height="450" fill="url(#spotlight)"/>
+  <rect x="0" y="0" width="800" height="4" fill="${bg}"/>
+  <rect x="0" y="446" width="800" height="4" fill="${bg}"/>
+  ${showTitle ? `<text x="50%" y="38" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.72)" text-anchor="middle">${cleanTitle.toUpperCase().replace(/[&<>'"]/g, '')}</text>` : ''}
+  <image href="data:${entry.contentType};base64,${b64}" xlink:href="data:${entry.contentType};base64,${b64}" x="120" y="55" width="560" height="320" preserveAspectRatio="xMidYMid meet" filter="url(#logoShadow)"/>
 </svg>`;
       res.setHeader('Content-Type', 'image/svg+xml');
       return res.send(svg);
@@ -556,14 +575,22 @@ app.get('/api/hlschunk', async (req, res) => {
     if (referer) headers['Referer'] = referer;
     if (req.headers['range']) headers['Range'] = req.headers['range'];
     const { request: undiciRequest } = require('undici');
-    const upstream = await undiciRequest(targetUrl, { headers, maxRedirections: 3, headersTimeout: 10000 });
+    const { Readable } = require('stream');
+    const upstream = await undiciRequest(targetUrl, { headers, headersTimeout: 10000 });
     res.status(upstream.statusCode);
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
     if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
     if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
-    if (upstream.body) upstream.body.pipe(res);
-    else res.end();
+    if (upstream.body) {
+      if (typeof upstream.body.pipe === 'function') {
+        upstream.body.pipe(res);
+      } else {
+        Readable.from(upstream.body).pipe(res);
+      }
+    } else {
+      res.end();
+    }
   } catch(e) {
     console.error('[HLSChunk] Error:', e.message);
     if (!res.headersSent) res.status(500).send('Proxy error');
@@ -610,6 +637,23 @@ function mergeRemintedUrl(heldUrl, freshUrl) {
     }
   }
 
+function getRemintCacheKey(rck, url) {
+  if (!rck) return null;
+  if (!url) return rck;
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\/(prime|sigma|alpha|delta|live|stream)\/[^/]+\/(\d+)\//i);
+    if (m) return `${rck}:${m[1].toLowerCase()}:${m[2]}`;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts.length > 1) {
+      return `${rck}:${parts.slice(0, parts.length - 1).join('/')}`;
+    }
+    return `${rck}:${u.pathname}`;
+  } catch (_) {
+    return rck;
+  }
+}
+
 function readRck(req) {
   try {
     const raw = req.originalUrl || req.url || '';
@@ -646,7 +690,7 @@ function rckCandidates(rck) {
   return out;
 }
 
-async function attemptRemint(rck) {
+async function attemptRemint(rck, heldUrl = '') {
   try {
     if (!rck || typeof rck !== 'string') return null;
     const candidates = rckCandidates(rck);
@@ -671,16 +715,74 @@ async function attemptRemint(rck) {
       new Promise((_, rej) =>
         setTimeout(() => rej(new Error('re-mint timeout')), REMINT_TIMEOUT_MS)),
     ]);
-    if (!Array.isArray(minted)) return null;
+    if (!Array.isArray(minted) || minted.length === 0) return null;
 
-    // Pull the fresh upstream URL out of the freshly built proxy URL.
+    // Collect all candidate fresh URLs from minted streams.
+    const freshUrls = [];
     for (const s of minted) {
-      if (s && typeof s.url === 'string' && s.url.includes('/api/manifest?')) {
-        const inner = new URL('http://localhost' + s.url).searchParams.get('url');
-        if (inner) return inner;
+      if (s && typeof s.url === 'string') {
+        if (s.url.includes('/api/manifest?')) {
+          const inner = new URL('http://localhost' + s.url).searchParams.get('url');
+          if (inner) freshUrls.push(inner);
+        } else if (s.url.startsWith('http')) {
+          freshUrls.push(s.url);
+        }
       }
     }
-    return null;
+    if (freshUrls.length === 0) return null;
+
+    // Match against currently held URL so we don't swap to an unrelated or broken sub-feed
+    if (heldUrl) {
+      try {
+        const heldParsed = new URL(heldUrl);
+        const heldPath = heldParsed.pathname;
+
+        // Match flavor and stream number (e.g. /prime/.../1/ or /sigma/.../2/)\
+        // WatchFooty pattern: /secure/TOKEN/FLAVOR/SLUG/NUM/EXPIRY/playlist.m3u8
+        const flavorMatch = heldPath.match(/\/(prime|sigma|alpha|delta|live|stream)\/[^/]+\/(\d+)\//i);
+        if (flavorMatch) {
+          const [, flavor, streamNum] = flavorMatch;
+          const matched = freshUrls.find(u => {
+            const up = new URL(u).pathname;
+            return up.includes(`/${flavor}/`) && up.includes(`/${streamNum}/`);
+          });
+          if (matched) return matched;
+
+          // Match by flavor
+          const flavorMatched = freshUrls.find(u => new URL(u).pathname.includes(`/${flavor}/`));
+          if (flavorMatched) return flavorMatched;
+        }
+
+        // Segment overlap heuristic for other providers (e.g. strmd.st, embed.st).
+        // Strips hex tokens and pure numeric segments — this leaves slug words like
+        // the sport category and match-slug, which are stable across re-mints.
+        // We also score by stream-number match (/N/ suffix before filename) so
+        // stream 2 stays on stream 2 rather than slipping to stream 1.
+        const heldSegments = heldPath.split('/').filter(s => s.length > 2 && !/^[0-9a-fA-F_-]{16,}$/.test(s) && !/^\d+$/.test(s));
+        const heldStreamNum = (heldPath.match(/\/(\d+)\/[^/]+$/) || [])[1] || null;
+
+        let bestMatch = null;
+        let maxScore = 0;
+        for (const candidate of freshUrls) {
+          const cPath = new URL(candidate).pathname;
+          let overlap = 0;
+          for (const seg of heldSegments) {
+            if (cPath.includes(seg)) overlap++;
+          }
+          // Bonus: stream number matches (strmd.st /N/ before filename)
+          const candStreamNum = (cPath.match(/\/(\d+)\/[^/]+$/) || [])[1] || null;
+          const numBonus = (heldStreamNum && candStreamNum && heldStreamNum === candStreamNum) ? 0.5 : 0;
+          const score = overlap + numBonus;
+          if (score > maxScore) {
+            maxScore = score;
+            bestMatch = candidate;
+          }
+        }
+        if (bestMatch && maxScore > 0) return bestMatch;
+      } catch (_) {}
+    }
+
+    return freshUrls[0];
   } catch (e) {
     console.warn('[ManifestProxy] re-mint failed:', e.message);
     return null;
@@ -720,7 +822,8 @@ app.get('/api/manifest', async (req, res) => {
         let reminted = false;
 
         if (rck) {
-          const cached = remintCache.get(rck);
+          const subKey = getRemintCacheKey(rck, effectiveUrl);
+          const cached = (subKey ? remintCache.get(subKey) : null) || remintCache.get(rck);
           if (cached && Date.now() < cached.expiresAt) {
             effectiveUrl = mergeRemintedUrl(effectiveUrl, cached.freshUrl);
             reminted = true;
@@ -731,10 +834,12 @@ app.get('/api/manifest', async (req, res) => {
         try {
           out = await fetchUpstreamManifest(effectiveUrl, referer, origin);
         } catch (firstErr) {
-          const fresh = (isExpiryStatus(firstErr) && rck) ? await attemptRemint(rck) : null;
+          const fresh = (isExpiryStatus(firstErr) && rck) ? await attemptRemint(rck, effectiveUrl || targetUrl) : null;
           if (!fresh || fresh === effectiveUrl) throw firstErr;
           
           console.log('[ManifestProxy] Upstream token expired — re-minted, retrying transparently');
+          const subKey = getRemintCacheKey(rck, effectiveUrl || targetUrl);
+          if (subKey) remintCache.set(subKey, { freshUrl: fresh, expiresAt: Date.now() + 15 * 60 * 1000 });
           remintCache.set(rck, { freshUrl: fresh, expiresAt: Date.now() + 15 * 60 * 1000 });
           
           // Preserve the variant the player asked for (see mergeRemintedUrl).

@@ -1,8 +1,7 @@
 /**
- * manifest.js — Stremio / Nuvio Addon Manifest (iptv-org edition)
+ * manifest.js — Stremio / Nuvio Addon Manifest
  *
- * Single catalog: all free live sports channels from iptv-org,
- * with a search catalog so users can filter by channel name.
+ * Live sports events and 24/7 sports networks aggregator.
  */
 
 const { addonBuilder } = require('stremio-addon-sdk');
@@ -13,7 +12,7 @@ const manifest = {
   name: '🏆 Nuvio Live Sports',
   description:
     'The ultimate live sports aggregator. Stream live Football, NBA, NFL, NHL, F1, and more. ' +
-    'Scrapes high-speed streams from multiple providers including TimStreams and IPTV. Zero-lag proxy included.',
+    'Aggregates high-speed live streams and 24/7 sports TV networks with zero-lag playback.',
   logo: '/logo.png',
 
   types: ['tv'],

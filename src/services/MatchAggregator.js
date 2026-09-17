@@ -137,8 +137,8 @@ function _tryExtractTeams(title) {
 // ────────────────────────────────────────────────────────────────────────────
 
 class MatchAggregator {
-  constructor({ timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider, iptvOrgProvider}) {
-    this.providers = [timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || []), replayzoneProvider, iptvOrgProvider];
+  constructor({ timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider}) {
+    this.providers = [timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || []), replayzoneProvider];
     this.cacheService = cacheService;
   }
 

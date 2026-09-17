@@ -111,10 +111,22 @@ class StreamedPkProvider extends BaseProvider {
           const homeBadge = item.teams && item.teams.home && item.teams.home.badge ? `https://streamed.pk/api/images/proxy/${item.teams.home.badge}` : '';
           const awayBadge = item.teams && item.teams.away && item.teams.away.badge ? `https://streamed.pk/api/images/proxy/${item.teams.away.badge}` : '';
 
+          let finalCategory = this.normalizeCategory(item.category);
+          if (is247Channel) {
+            const titleLower = item.title.toLowerCase();
+            const idLower = item.id.toLowerCase();
+            if (titleLower.includes('nfl') || idLower.includes('nfl')) finalCategory = 'american_football';
+            else if (titleLower.includes('cricket') || idLower.includes('cricket')) finalCategory = 'cricket';
+            else if (titleLower.includes('tennis') || idLower.includes('tennis')) finalCategory = 'tennis';
+            else if (titleLower.includes('rally') || titleLower.includes('f1') || titleLower.includes('motor')) finalCategory = 'motorsport';
+            else if (titleLower.includes('league') || titleLower.includes('rugby')) finalCategory = 'rugby';
+            else finalCategory = 'networks';
+          }
+
           matches.push(new MatchEntity({
             id: `spk_${item.id}`,
             title: item.title,
-            category: is247Channel && (item.id.includes('channel') || item.id.includes('network') || item.id.includes('tv') || Number(item.date) <= 0) ? (item.category === 'cricket' ? 'cricket' : (item.category === 'tennis' ? 'tennis' : (item.category === 'rugby' ? 'rugby' : this.normalizeCategory(item.category)))) : this.normalizeCategory(item.category),
+            category: finalCategory,
             status: status,
             date: is247Channel ? '' : String(item.date || Date.now()),
             popular: is247Channel ? '1' : (item.popular ? '1' : '0'),

@@ -162,8 +162,8 @@ describe('mapMatchToMetaPreview replay labelling', () => {
     const meta = mapMatchToMetaPreview(finishedMatch());
 
     expect(meta.name.startsWith('⏪')).toBe(true);
-    expect(meta.releaseInfo).toBe('REPLAY');
-    expect(meta.description).toContain('Replay from');
+    expect(meta.releaseInfo).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+    expect(meta.description).toContain('Replay');
     expect(meta.description).not.toContain('Kickoff at');
   });
 

@@ -94,8 +94,8 @@ function isMatchLive(match) {
   //    let the clock decide, otherwise real live games would disappear.
   if (match.status === 'upcoming') {
     if (!match.date) return false;
-    if (Date.now() < getKickoff(match.date)) return false;
-    // kicked off -> fall through to the time-based branch
+    if (Date.now() < (getKickoff(match.date) - LIVE_LEAD_MS)) return false;
+    // kicked off or inside 15-minute live lead window -> fall through to the time-based branch
   }
 
   if (!match.date) return true;
@@ -105,7 +105,7 @@ function isMatchLive(match) {
   const kickoff = match.date ? getKickoff(match.date) : 0;
 
   if (kickoff > 0) {
-    if (now < kickoff) return false; // not started yet
+    if (now < (kickoff - LIVE_LEAD_MS)) return false; // not started yet
     const maxDuration = getEventDurationMs(match.category);
     return now <= (kickoff + maxDuration);
   }
@@ -243,6 +243,7 @@ function mapMatchToMetaPreview(match, config = {}) {
   let background = matchBackground ? (buildImg(matchBackground, posterText, color) || poster) : poster;
 
   let timeString = match.category === 'networks' ? '24/7 Stream' : 'Live Now';
+  let dateString = '';
   let relativeTimeStr = '';
   let releasedIso = null;
   
@@ -250,12 +251,17 @@ function mapMatchToMetaPreview(match, config = {}) {
      const dateObj = new Date(getKickoff(match.date));
      releasedIso = dateObj.toISOString();
      const options = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }; // 24-hour format (00-23), never AM/PM
+     const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
      
      if (config && config.timezone) {
        options.timeZone = config.timezone;
+       dateOptions.timeZone = config.timezone;
+     } else {
+       dateOptions.timeZone = 'UTC';
      }
      
      timeString = dateObj.toLocaleTimeString('en-US', options) + (options.timeZone ? ` (${options.timeZone})` : '');
+     dateString = dateObj.toLocaleDateString('en-US', dateOptions);
      
      const now = Date.now();
      const diff = dateObj.getTime() - now;
@@ -278,12 +284,14 @@ function mapMatchToMetaPreview(match, config = {}) {
   if (match.team1 && match.team1.name) cast.push(match.team1.name);
   if (match.team2 && match.team2.name) cast.push(match.team2.name);
 
+  const replayReleaseInfo = dateString || (match.date && typeof match.date === 'string' && match.date !== '0' ? match.date.slice(0, 10) : 'Replay');
+
   const leagueStr = match.league ? `🏆 League: ${match.league}\n` : '';
   const statusStr = is247
     ? '24/7 Live Network'
     : (isLive
         ? '🔴 LIVE NOW'
-        : (isReplay ? `⏪ Replay from ${timeString}` : `⏱️ Kickoff at ${timeString}${relativeTimeStr}`));
+        : (isReplay ? `⏪ Replay (${replayReleaseInfo})` : `⏱️ Kickoff at ${timeString}${relativeTimeStr}`));
   const desc = `${leagueStr}📅 Category: ${match.category.toUpperCase()}\n⏰ Status: ${statusStr}`;
 
   const metaPreview = {
@@ -295,7 +303,7 @@ function mapMatchToMetaPreview(match, config = {}) {
     posterShape: 'landscape',
     background: background,
     logo: logo,
-    releaseInfo: isReplay ? 'REPLAY' : (isLive ? (is247 ? '24/7' : 'LIVE') : timeString),
+    releaseInfo: isReplay ? replayReleaseInfo : (isLive ? (is247 ? '24/7' : 'LIVE') : timeString),
     description: desc,
     cast: cast,
     behaviorHints: {
@@ -403,7 +411,7 @@ async function handleCatalog(type, id, extra, config) {
     //      Fox League, Tennis) carry no date, whereas real fixtures do.
     // Together these push real matches up while leaving genuine channel-only
     // networks at the bottom.
-    const isRealFixture = (m) => (m.category !== 'networks' && !!m.date) ? 1 : 0;
+    const isRealFixture = (m) => (m.category !== 'networks' && (!!m.date || !!m.team1 || !!m.team2 || m.title.includes(' vs ') || m.title.includes(' @ '))) ? 1 : 0;
     const aFix = isRealFixture(a);
     const bFix = isRealFixture(b);
     if (aFix !== bFix) return bFix - aFix; // Real fixtures before 24/7 channels
