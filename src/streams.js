@@ -2,11 +2,11 @@ const container = require('./container');
 
 // Source selection (shared by handleStream and prewarmMatch)
 function selectSources(matchSources, config) {
-  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'replayzone': 2, 'watchfooty': 2, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'streamfree': 8, 'timstreams': 9, 'streamsports': 13, 'iptv-org': 14, 'embedindia': 15 };
+  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'replayzone': 2, 'watchfooty': 2, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'timstreams': 9, 'streamsports': 13, 'iptv-org': 14, 'embedindia': 15 };
   const sortedSources = [...matchSources].sort((a, b) => {
     // Unknown sources that are not known fallback providers are likely new
     // Streamed.pk sources - priority 1.5 keeps them near the top.
-    const getPriority = (src) => SOURCE_PRIORITY[src] ?? (['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'replayzone'].includes(src) ? 99 : 1.5);
+    const getPriority = (src) => SOURCE_PRIORITY[src] ?? (['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'iptv-org', 'replayzone'].includes(src) ? 99 : 1.5);
     const pa = getPriority(a.source);
     const pb = getPriority(b.source);
     if (pa !== pb) return pa - pb;
@@ -15,7 +15,7 @@ function selectSources(matchSources, config) {
 
   if (config && typeof config.sources === 'string' && config.sources !== 'none') {
     const enabled = config.sources.split(',');
-    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'embedindia', 'embedst', 'streamedpk', 'replayzone'];
+    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'iptv-org', 'embedindia', 'embedst', 'streamedpk', 'replayzone'];
     return sortedSources.filter(src => {
       if (src.source.startsWith('yaml_')) return true;
       const isFallback = KNOWN_FALLBACKS.includes(src.source);
@@ -26,7 +26,7 @@ function selectSources(matchSources, config) {
     });
   }
 
-  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'streamfree', 'timstreams', 'streamsports', 'iptv-org', 'embedst', 'streamedpk', 'replayzone'];
+  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'iptv-org', 'embedst', 'streamedpk', 'replayzone'];
   return sortedSources.filter(src => {
     if (src.source.startsWith('yaml_')) return true;
     return KNOWN_FALLBACKS.includes(src.source);
@@ -40,11 +40,7 @@ async function resolveSource(src, match, config) {
   let resStreams = [];
 
   try {
-    if (sourceName === 'streamfree') {
-      const provider = container.resolve('streamFreeProvider');
-      const sfCategory = src.original_category || match.category;
-      resStreams = await provider.resolveStream(src.id, sfCategory, match.title);
-    } else if (sourceName === 'timstreams') {
+    if (sourceName === 'timstreams') {
       const provider = container.resolve('timStreamsProvider');
       resStreams = await provider.resolveStream(src.id, match.category, match.title);
     } else if (sourceName === 'watchfooty') {
@@ -240,7 +236,12 @@ async function mintVerifiedSources(src, match, config, cacheKey) {
 }
 
 // Prewarm: mint tokens for a match's top sources before the user clicks
-async function prewarmMatch(match, config, topN = 3) {
+// Prewarm all sources by default. This used to default to 3, which meant only the
+// first three providers were minted up-front and the rest (WatchFooty is commonly
+// 4th in priority order) were minted while the user was already waiting on the
+// click. Callers can still pass an explicit smaller number if they ever want to
+// cap it, but the safe default is "everything".
+async function prewarmMatch(match, config, topN = Number.MAX_SAFE_INTEGER) {
   try {
     if (!match || !match.sources || !match.sources.length) return;
     const resolveCache = container.resolve('streamResolveCache');
@@ -349,33 +350,6 @@ async function handleStream(type, id, config) {
   }
 
   // --- Inject relevant 24/7 channels based on category ---
-  const isStreamFreeEnabled = !config || !config.sources || config.sources === 'none' || config.sources.split(',').includes('streamfree');
-  if (match.category === 'cricket' && isStreamFreeEnabled) {
-    try {
-      const extraChannels = [
-        { id: 'willow', title: 'Willow TV' },
-        { id: 'skycricket', title: 'Sky Sports Cricket' }
-      ];
-      
-      const warmed = await Promise.all(extraChannels.map(async (channel) => {
-        const key = `streamfree:__channel__:${channel.id}`;
-        const resolved = await resolveCache.getOrCreate(key, () => mintVerifiedSources(
-          { source: 'streamfree', id: channel.id, original_category: 'cricket' },
-          { category: 'cricket', title: channel.title },
-          config,
-          key
-        ));
-        return resolved.map((s) => ({ ...s, _cacheKey: key }));
-      }));
-      warmed.flat().forEach((s) => {
-        s.score = streamScorer.calculateScore(s, 'streamfree');
-        s._source = 'streamfree';
-        streams.push(s);
-      });
-    } catch (e) {
-      console.warn('[streams.js] Error injecting 24/7 cricket channels:', e.message);
-    }
-  }
 
   // Standardize Stream Labels
   const sportIcons = {
@@ -385,7 +359,7 @@ async function handleStream(type, id, config) {
   const icon = sportIcons[match.category] || '📡';
   
   const niceNames = {
-    streamfree: 'StreamFree', timstreams: 'TimStreams',
+    timstreams: 'TimStreams',
     streamsports: 'StreamSports',
     'iptv-org': 'Direct IPTV', 'streamsports99': 'StreamSports99',
     'streamic': 'Streamic',
@@ -410,7 +384,6 @@ async function handleStream(type, id, config) {
     let providerName = niceNames[s._source] || niceNames[Object.keys(niceNames).find(k => s.title && s.title.toLowerCase().includes(k))] || 'Streamed.pk';
     
     if (s.title && s.title.toLowerCase().includes('timstreams')) providerName = 'TimStreams';
-    else if (s.title && s.title.toLowerCase().includes('streamfree')) providerName = 'StreamFree';
     else if (s.title && s.title.toLowerCase().includes('watchfooty')) providerName = 'WatchFooty';
     else if (s.title && s.title.toLowerCase().includes('cdnlive')) providerName = 'CDNLiveTV';
     else if (s.title && s.title.toLowerCase().includes('streamsports99')) providerName = 'StreamSports99';

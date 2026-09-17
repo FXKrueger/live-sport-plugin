@@ -32,7 +32,7 @@ const SPORT_MAX_DURATION_MS = {
   darts: 4 * 60 * 60 * 1000
 };
 const LIVE_LEAD_MS = 15 * 60 * 1000;
-const DEFAULT_EVENT_DURATION_MS = 3 * 60 * 60 * 1000;
+const DEFAULT_EVENT_DURATION_MS = 12 * 60 * 60 * 1000;
 
 function getEventDurationMs(category) {
   return SPORT_MAX_DURATION_MS[category] || DEFAULT_EVENT_DURATION_MS;
@@ -145,7 +145,7 @@ function isReplayMatch(match) {
   return Date.now() > kickoff + getEventDurationMs(match.category);
 }
 
-function normalizeImageUrl(url, defaultHost = 'https://streamfree.top') {
+function normalizeImageUrl(url, defaultHost = '') {
   if (!url || typeof url !== 'string') return null;
   let u = url.trim();
   if (!u) return null;
@@ -499,9 +499,18 @@ async function handleMeta(type, id, config) {
     return { meta: null };
   }
 
-  // Prewarm: mint tokens for this match's top sources while the user is still
-  // on the detail page, so the eventual click is near-instant. Fire-and-forget.
-  try { prewarmMatch(match, config || {}).catch(() => {}); } catch (_) {}
+  // Prewarm while the user is still on the detail page, so the eventual click is
+  // near-instant. Fire-and-forget, and deliberately scoped:
+  //   - LIVE matches only (replays / upcoming / 24/7 networks are skipped), so we
+  //     never mint tokens for content nobody is about to watch;
+  //   - ALL sources, not just the top few. Minting only the top 3 meant the
+  //     remaining providers (WatchFooty is commonly 4th) were minted while the
+  //     user was already waiting - which is exactly where the delay came from.
+  try {
+    if (isMatchLive(match) && match.category !== 'networks' && !isReplayMatch(match)) {
+      prewarmMatch(match, config || {}, Number.MAX_SAFE_INTEGER).catch(() => {});
+    }
+  } catch (_) {}
 
   return { meta: mapMatchToMetaPreview(match, config || {}) };
 }

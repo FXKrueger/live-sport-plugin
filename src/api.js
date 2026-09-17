@@ -1,7 +1,6 @@
 const { request } = require('undici');
 
 const STREAMED_API = 'https://streamed.pk/api';
-const STREAMFREE_API = 'https://streamfree.top/streams';
 
 function normalizeCategory(cat) {
   if (!cat) return 'other';
@@ -75,36 +74,6 @@ async function getAllMatches() {
 
   const unifiedEvents = [];
 
-  // 1. Fetch from StreamFree.top (Primary - has logos)
-  try {
-    const freeRes_req = await request(STREAMFREE_API, { headersTimeout: 7000, bodyTimeout: 7000 });
-    const freeRes = {
-      data: await freeRes_req.body.text().then(t => { try { return JSON.parse(t); } catch(e) { return t; } })
-    };
-    if (freeRes.data && freeRes.data.streams) {
-      Object.entries(freeRes.data.streams).forEach(([category, streams]) => {
-        if (Array.isArray(streams)) {
-          streams.forEach(s => {
-            const id = s.stream_key || s.id;
-            unifiedEvents.push({
-              id: id,
-              title: s.name,
-              category: normalizeCategory(category),
-              date: (s.match_timestamp * 1000).toString(), 
-              popular: (s.viewers || 0) > 100 ? '1' : '0',
-              league: s.league,
-              team1: s.team1,
-              team2: s.team2,
-              thumbnail_url: s.thumbnail_url,
-              sources: [{ source: 'streamfree', id: id, original_category: category }]
-            });
-          });
-        }
-      });
-    }
-  } catch (error) {
-    console.error('[API] Error fetching from StreamFree.top:', error.message);
-  }
 
   // 2. Fetch from Streamed.pk (Secondary/Fallback) and group them
   try {

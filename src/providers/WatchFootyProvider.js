@@ -85,6 +85,10 @@ class WatchFootyProvider extends BaseProvider {
 
   async resolveStream(sourceId, matchCategory, matchTitle) {
     const streams = [];
+    // Declared at FUNCTION scope: the summary log after the try/catch reads it.
+    // (Declaring it inside the `if (match...)` block made it out of scope there,
+    // which threw "skipped is not defined" and aborted the whole resolve.)
+    let skipped = 0;
     try {
       const data = await this.fetchMatchDetails.fire(sourceId);
       const match = Array.isArray(data) ? data[0] : data;
@@ -109,7 +113,6 @@ class WatchFootyProvider extends BaseProvider {
         }
 
         let idx = 0;
-        let skipped = 0;
         for (const s of match.streams) {
           if (s.url) {
             // Skip variants already known to be unreachable (embed URLs only;
