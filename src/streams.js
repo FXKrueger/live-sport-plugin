@@ -176,8 +176,48 @@ async function verifyStreams(streams, cacheKey, m3u8Parser, resolveCache) {
 
       clearTimeout(timeout);
 
+      // ── Retry-once safety net ───────────────────────────────────────────
+      // Some CDNs (notably WatchFooty's wfty.st edge) answer 403 Forbidden
+      // purely because the Referer header is missing. Before declaring a stream
+      // dead, retry once with a plausible Referer derived from the upstream
+      // host. A stream that plays with a referer must never be dropped merely
+      // because verification lacked one.
+      if ((res.status === 403 || res.status === 401) && !referer) {
+        try {
+          let guess;
+          try {
+            const h = new URL(targetUrl).hostname;
+            if (/\.wfty\.st$/.test(h) || /watchfooty/i.test(h)) guess = 'https://sportsembed.su/';
+            else if (/\.strmd\.st$/.test(h) || /streamed/i.test(h)) guess = 'https://embed.st/';
+            else guess = `https://${h}/`;
+          } catch (_) { guess = 'https://sportsembed.su/'; }
+          console.log(`[Filter] ${res.status} with no referer; retrying once with ${guess}`);
+          const r2 = await _safeFetch(targetUrl, {
+            method: 'GET',
+            headers: {
+              'User-Agent': reqHeaders['User-Agent'],
+              'Referer': guess,
+              'Origin': guess.replace(/\/$/, ''),
+            },
+            signal: abortController.signal,
+            timeoutMs: 5000,
+          });
+          res = { status: r2.status };
+          bodySample = await r2.text();
+          if (res.status === 200) referer = guess; // so a later noteFailure/keep decision is accurate
+        } catch (_) { /* fall through to the dead-stream handling below */ }
+      }
+
       // Edge servers return 404 for dead streams, 403 for IP-locked/expired tokens, 502 for upstream failures
       if (res.status === 404 || res.status === 403 || res.status >= 500) {
+        // A 403 that persisted even WITH a referer is a genuine refusal.
+        // A 403 with no referer available at all is not proof of a dead stream,
+        // so keep it and let the client try (failing over costs less than
+        // silently discarding a working source).
+        if (res.status === 403 && !referer) {
+          console.log(`[Filter] Keeping stream despite 403 (no referer available): ${targetUrl}`);
+          return s;
+        }
         console.log(`[Filter] Dropped dead stream (${res.status}): ${targetUrl}`);
         if (cacheKey) resolveCache.noteFailure(cacheKey);
         return null;

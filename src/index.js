@@ -24,6 +24,23 @@ const { handleCatalog, handleMeta } = require('./catalog');
 const { handleStream } = require('./streams');
 const { PORT, BASE_URL, getRequestBaseUrl } = require('./config');
 const container = require('./container');
+const https = require('https');
+const http = require('http');
+
+const hlsChunkHttpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 100,
+  maxFreeSockets: 20,
+  timeout: 15000
+});
+const hlsChunkHttpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 100,
+  maxFreeSockets: 20,
+  timeout: 15000
+});
 
 
 
@@ -335,15 +352,32 @@ async function fetchUpstreamManifest(targetUrl, referer, origin) {
   };
   // _safeFetch: impit (browser TLS fingerprint) with automatic undici fallback.
   // A hard 10 s timeout ensures a hung upstream can never hold the viewer's poll.
-  const result = await _safeFetch(targetUrl, { headers, timeoutMs: 10000 });
-  if (!result.ok) {
-    // Carry the upstream status so the caller can tell "the token/CDN said no"
-    // apart from "our proxy is broken" — they need different HTTP responses.
-    const err = new Error(`HTTP ${result.status}`);
-    err.statusCode = result.status;
-    throw err;
+  const attempt = async () => {
+    const result = await _safeFetch(targetUrl, { headers, timeoutMs: 10000 });
+    if (!result.ok) {
+      // Carry the upstream status so the caller can tell "the token/CDN said no"
+      // apart from "our proxy is broken" — they need different HTTP responses.
+      const err = new Error(`HTTP ${result.status}`);
+      err.statusCode = result.status;
+      throw err;
+    }
+    return await result.text();
+  };
+
+  try {
+    return await attempt();
+  } catch (err) {
+    // Transient upstream trouble: these load balancers (lb*.wfty.st, strmd.st) are
+    // observed to throw 500/502/503/504 intermittently. A single retry after a
+    // short pause recovers the large majority — the upstream is usually healthy
+    // again within a second. Without this the player received a 502 and stalled.
+    const status = err && err.statusCode;
+    const isTransient = status === 500 || status === 502 || status === 503 || status === 504;
+    if (!isTransient) throw err;
+    await new Promise((r) => setTimeout(r, 400));
+    console.warn(`[ManifestProxy] Upstream ${status} — retrying once: ${String(targetUrl).slice(0, 90)}`);
+    return await attempt(); // a second failure propagates with statusCode intact
   }
-  return await result.text();
 }
 
 // Range-aware MP4 proxy for ok.ru direct video files
@@ -566,32 +600,126 @@ app.get('/api/mp4proxy', async (req, res) => {
   }
 });
 
-app.get('/api/hlschunk', async (req, res) => {
+function createSegmentUncloakStream() {
+  const { Transform } = require('stream');
+  let buffered = Buffer.alloc(0);
+  let stripping = true;
+
+  return new Transform({
+    transform(chunk, encoding, callback) {
+      if (!stripping) {
+        this.push(chunk);
+        return callback();
+      }
+
+      buffered = Buffer.concat([buffered, chunk]);
+
+      // Direct clean TS packet
+      if (buffered.length >= 4 && buffered[0] === 0x47) {
+        stripping = false;
+        this.push(buffered);
+        return callback();
+      }
+
+      // PNG cloaked TS (WatchFooty / sportsembed) - starts with \x89PNG
+      if (buffered.length >= 4 && buffered[0] === 0x89 && buffered[1] === 0x50 && buffered[2] === 0x4e && buffered[3] === 0x47) {
+        const iend = buffered.indexOf(Buffer.from('IEND'));
+        if (iend >= 0 && iend + 8 <= buffered.length) {
+          stripping = false;
+          this.push(buffered.subarray(iend + 8));
+          return callback();
+        }
+        return callback();
+      }
+
+      // RIFF / WEBP cloaked TS (Streamed.pk / TikTok CDN)
+      if (buffered.length >= 12 && buffered[0] === 0x52 && buffered[1] === 0x49 && buffered[2] === 0x46 && buffered[3] === 0x46) {
+        const exif = buffered.indexOf(Buffer.from('EXIF'));
+        if (exif >= 0 && exif + 8 <= buffered.length) {
+          stripping = false;
+          this.push(buffered.subarray(exif + 8));
+          return callback();
+        }
+        if (buffered.length >= 43 && buffered[42] === 0x47) {
+          stripping = false;
+          this.push(buffered.subarray(42));
+          return callback();
+        }
+        return callback();
+      }
+
+      // General scan for TS 188-byte sync byte pattern (verify at least 2 consecutive sync points)
+      for (let i = 0; i < Math.min(buffered.length, 65536); i++) {
+        if (buffered[i] === 0x47 && i + 188 < buffered.length && buffered[i + 188] === 0x47) {
+          if (i + 376 >= buffered.length || buffered[i + 376] === 0x47) {
+            stripping = false;
+            this.push(buffered.subarray(i));
+            return callback();
+          }
+        }
+      }
+
+      // If more than 128KB collected without sync byte, pass through as-is
+      if (buffered.length > 131072) {
+        stripping = false;
+        this.push(buffered);
+        return callback();
+      }
+
+      callback();
+    },
+    flush(callback) {
+      if (stripping && buffered.length > 0) {
+        this.push(buffered);
+      }
+      callback();
+    }
+  });
+}
+
+app.get('/api/hlschunk', (req, res) => {
   const targetUrl = req.query.url;
   const referer = req.query.referer;
   if (!targetUrl) return res.status(400).send('Missing url');
+
   try {
-    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' };
+    const parsed = new URL(targetUrl);
+    const isHttps = parsed.protocol === 'https:';
+    const client = isHttps ? https : http;
+    const agent = isHttps ? hlsChunkHttpsAgent : hlsChunkHttpAgent;
+
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+    };
     if (referer) headers['Referer'] = referer;
     if (req.headers['range']) headers['Range'] = req.headers['range'];
-    const { request: undiciRequest } = require('undici');
-    const { Readable } = require('stream');
-    const upstream = await undiciRequest(targetUrl, { headers, headersTimeout: 10000 });
-    res.status(upstream.statusCode);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
-    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
-    if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
-    if (upstream.body) {
-      if (typeof upstream.body.pipe === 'function') {
-        upstream.body.pipe(res);
-      } else {
-        Readable.from(upstream.body).pipe(res);
-      }
-    } else {
-      res.end();
-    }
-  } catch(e) {
+
+    const upstreamReq = client.get(targetUrl, {
+      agent,
+      headers,
+      timeout: 15000
+    }, upstreamRes => {
+      res.status(upstreamRes.statusCode);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'video/mp2t');
+
+      const uncloakStream = createSegmentUncloakStream();
+      upstreamRes.pipe(uncloakStream).pipe(res);
+    });
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(new Error('Upstream timeout'));
+    });
+
+    upstreamReq.on('error', err => {
+      console.error('[HLSChunk] Upstream request error:', err.message);
+      if (!res.headersSent) res.status(502).send('Upstream error');
+    });
+
+    req.on('close', () => {
+      if (!upstreamReq.destroyed) upstreamReq.destroy();
+    });
+  } catch (e) {
     console.error('[HLSChunk] Error:', e.message);
     if (!res.headersSent) res.status(500).send('Proxy error');
   }
@@ -797,7 +925,13 @@ app.get('/api/manifest', async (req, res) => {
 
   if (!targetUrl) return res.status(400).send('Missing url');
 
-  const cacheKey = `${targetUrl}|${referer}|${origin}`;
+  // Detect whether the client is a browser / web client requiring CORS proxying
+  const clientOrigin = req.headers['origin'] || '';
+  const isWebClient = proxyChunks || req.query.web === '1' ||
+                      (clientOrigin && (clientOrigin.includes('stremio') || clientOrigin.includes('localhost') || clientOrigin.includes('http'))) ||
+                      req.headers['sec-fetch-mode'] === 'cors';
+
+  const cacheKey = `${targetUrl}|${referer}|${origin}|${isWebClient ? 'web' : 'native'}`;
   // Recovery key for this stream, if the URL was emitted by our own resolver.
   const rck = readRck(req);
   const rckSuffix = rck ? '&rck=' + encodeURIComponent(rck) : '';
@@ -872,24 +1006,22 @@ app.get('/api/manifest', async (req, res) => {
           // Fallback to default TTL on parse error
         }
 
-        // Hold a re-minted manifest longer, so we do not re-mint on every poll.
-        if (reminted) dynamicTtl = Math.max(dynamicTtl, REMINT_MIN_CACHE_MS);
-
         const isLive = !out.includes('#EXT-X-ENDLIST');
+        const isMaster = out.includes('#EXT-X-STREAM-INF');
+
+        // Master playlists can be cached longer, but live media playlists must refresh dynamically (2-3s)
+        if (isMaster) {
+          dynamicTtl = 60000;
+        } else if (isLive) {
+          dynamicTtl = Math.min(dynamicTtl, 3000);
+        }
         let injectedStart = out.includes('#EXT-X-START');
 
-        // Rewrite the manifest
         const lines = out.split('\n');
         const rewritten = lines.map(line => {
           const l = line.trim();
 
           let resultLine = line;
-
-          if (isLive && !injectedStart && (l === '#EXTM3U' || l.startsWith('#EXT-X-VERSION'))) {
-            const carriageReturn = line.endsWith('\r') ? '\r' : '';
-            resultLine = `${line}\n#EXT-X-START:TIME-OFFSET=-15${carriageReturn}`;
-            injectedStart = true;
-          }
 
           if (!l) return resultLine;
           
@@ -927,18 +1059,32 @@ app.get('/api/manifest', async (req, res) => {
           }
 
           if (absoluteUrl.includes('.m3u8')) {
-            return `/api/manifest?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}${proxyChunks ? '&proxyChunks=1' : ''}${rckSuffix}`;
+            const webSuffix = isWebClient ? '&web=1' : '';
+            return `/api/manifest?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}${proxyChunks ? '&proxyChunks=1' : ''}${webSuffix}${rckSuffix}`;
           }
 
-          if (proxyChunks && (absoluteUrl.includes('.ts') || absoluteUrl.includes('.mp4') || absoluteUrl.includes('.vtt') || absoluteUrl.includes('.aac') || absoluteUrl.includes('.m4s') || absoluteUrl.includes('.m4a') || absoluteUrl.includes('.m4v') || absoluteUrl.includes('.js') || absoluteUrl.includes('.image'))) {
+          // Cloaked segments must be proxied ONLY when the client needs it:
+          // 1. .image (Streamed.pk / TikTok CDN) genuinely contains a 42-byte WebP/RIFF header and needs unwrapping to MPEG-TS
+          // 2. Web clients (browser) where CORS forbids direct fetching from storage buckets without Access-Control-Allow-Origin
+          // 3. proxyChunks explicitly requested
+          //
+          // Pure MPEG-TS disguised as .png/.webp (WatchFooty / Alibaba / R2 / Tencent) has NO header wrapper (starts with 0x47 byte 0).
+          // Native players (Android, FireStick, Desktop, iOS) do not enforce browser CORS and can fetch directly from CDN without server double-hop.
+          const needsUnwrapping = absoluteUrl.includes('.image');
+          const isPureDisguisedTs = absoluteUrl.includes('.png') || absoluteUrl.includes('.webp') || absoluteUrl.includes('.js');
+
+          if (proxyChunks || needsUnwrapping || (isWebClient && isPureDisguisedTs)) {
             let chunkUrl = `/api/hlschunk?url=${encodeURIComponent(absoluteUrl)}`;
             if (referer) chunkUrl += `&referer=${encodeURIComponent(referer)}`;
             return chunkUrl;
           }
 
-          if ((absoluteUrl.includes('.image') || absoluteUrl.includes('.js')) && !absoluteUrl.includes('.ts') && !absoluteUrl.includes('.m3u8') && !absoluteUrl.includes('.m4s')) {
-            absoluteUrl += '#.ts';
+          // For native clients playing pure MPEG-TS with disguised extension, append '#.ts'
+          // so any naive media parser knows it's transport stream without altering HTTP fetch
+          if (isPureDisguisedTs && !absoluteUrl.includes('.ts')) {
+            return absoluteUrl + '#.ts';
           }
+
           return absoluteUrl;
         });
 
@@ -968,11 +1114,20 @@ app.get('/api/manifest', async (req, res) => {
     const upstreamStatus = err && err.statusCode;
     const isExpired = upstreamStatus === 401 || upstreamStatus === 403 ||
                       upstreamStatus === 404 || upstreamStatus === 410;
+    // A transient upland 5xx that survived the retry above is NOT a broken proxy —
+    // the upstream is just briefly unavailable. Reporting 404 lets the player fail
+    // over to another stream instead of stalling on a 502.
+    const isTransientUpstream = upstreamStatus >= 500 && upstreamStatus <= 599;
     if (err.message === 'Upstream returned non-m3u8 body' ||
-        err.message === 'Upstream playlist has no media entries' || isExpired) {
+        err.message === 'Upstream playlist has no media entries' ||
+        isExpired || isTransientUpstream) {
       if (isExpired) {
         console.warn(`[ManifestProxy] Upstream refused with ${upstreamStatus} (expired token?) for ${targetUrl}`);
+      } else if (isTransientUpstream) {
+        console.warn(`[ManifestProxy] Upstream ${upstreamStatus} persisted after retry; reporting 404 so the player fails over`);
       }
+      // Negative-cache briefly so the player's rapid polls don't hammer a dead
+      // upstream, but short enough that a recovered upstream is picked up quickly.
       manifestCacheSetNegative(cacheKey, 404, 'Stream not found or expired');
       return res.status(404).send('Stream not found or expired');
     }

@@ -199,7 +199,22 @@ class WatchFootyProvider extends BaseProvider {
                         console.log(`[WatchFootyProvider] Successfully extracted M3U8: ${m3u8Url}`);
                         const proxyUrl = `${BASE_URL}/api/manifest?url=${encodeURIComponent(m3u8Url)}&referer=${encodeURIComponent('https://sportsembed.su/')}&origin=${encodeURIComponent('https://sportsembed.su')}`;
                         entityParams.url = proxyUrl;
-                        entityParams.behaviorHints = { notWebReady: true };
+                        // Preserve the referer/origin the CDN requires. WatchFooty's
+                        // edge (wfty.st) answers 403 Forbidden without a Referer, so
+                        // the pre-flight health check in verifyStreams was dropping
+                        // every one of these as "dead" even though they play fine.
+                        // Declaring proxyHeaders lets verification succeed AND lets
+                        // clients send the header themselves.
+                        entityParams.behaviorHints = {
+                          notWebReady: true,
+                          proxyHeaders: {
+                            request: {
+                              'Referer': 'https://sportsembed.su/',
+                              'Origin': 'https://sportsembed.su',
+                              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+                            }
+                          }
+                        };
                         streams.push(new StreamEntity(entityParams));
                     }
                 } catch (e) {

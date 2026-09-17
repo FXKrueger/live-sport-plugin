@@ -156,9 +156,15 @@ class StreamedPkProvider extends BaseProvider {
         // Sort streams by viewer count (descending)
         streamList.sort((a, b) => (b.viewers || 0) - (a.viewers || 0));
 
-        // Chunk the stream list to prevent memory spiking on Render (512MB RAM limit).
-        // Executing max 3 WASM child processes at a time keeps RAM usage very safe.
-        const CHUNK_SIZE = 3;
+        // Resolve the stream variants in bounded batches.
+        //
+        // This used to be a hardcoded 3, chosen for Render's 512MB free tier when
+        // each variant spawns a WASM child process. We no longer run on Render, so
+        // that ceiling is unnecessarily conservative and serialises the resolve
+        // into several sequential rounds (12 variants = 4 rounds at 3/batch).
+        // Default is now 5, tunable via STREAMEDPK_CHUNK without a rebuild. The
+        // batch is still bounded so a machine with little RAM is not overwhelmed.
+        const CHUNK_SIZE = Math.max(1, Number(process.env.STREAMEDPK_CHUNK || 5));
         for (let i = 0; i < streamList.length; i += CHUNK_SIZE) {
           const chunk = streamList.slice(i, i + CHUNK_SIZE);
           
