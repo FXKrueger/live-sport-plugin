@@ -536,18 +536,20 @@ app.get('/api/mp4proxy', async (req, res) => {
 
 app.get('/api/hlschunk', async (req, res) => {
   const targetUrl = req.query.url;
+  const referer = req.query.referer;
   if (!targetUrl) return res.status(400).send('Missing url');
   try {
-    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
+    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' };
+    if (referer) headers['Referer'] = referer;
     if (req.headers['range']) headers['Range'] = req.headers['range'];
-    const upstream = await fetch(targetUrl, { headers, redirect: 'follow' });
-    res.status(upstream.status);
+    const { request: undiciRequest } = require('undici');
+    const upstream = await undiciRequest(targetUrl, { headers, maxRedirections: 3, headersTimeout: 10000 });
+    res.status(upstream.statusCode);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    if (upstream.headers.get('content-type')) res.setHeader('Content-Type', upstream.headers.get('content-type'));
-    if (upstream.headers.get('content-length')) res.setHeader('Content-Length', upstream.headers.get('content-length'));
-    if (upstream.headers.get('content-range')) res.setHeader('Content-Range', upstream.headers.get('content-range'));
-    const { Readable } = require('stream');
-    if (upstream.body) Readable.fromWeb(upstream.body).pipe(res);
+    if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
+    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+    if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
+    if (upstream.body) upstream.body.pipe(res);
     else res.end();
   } catch(e) {
     console.error('[HLSChunk] Error:', e.message);
@@ -564,6 +566,36 @@ const REMINT_TIMEOUT_MS = 9000;
 // After a re-mint, hold the rewritten manifest at least this long so we do not
 // re-mint on every 3-6 s player poll (that would hammer the provider).
 const REMINT_MIN_CACHE_MS = 45 * 1000;
+const remintCache = new Map(); // rck -> { freshUrl, expiresAt }
+
+// Merge a freshly-minted URL into the URL the player is currently holding.
+//
+// Providers put their token in different places:
+//   streamed.pk / StreamFree : token in the QUERY  (?token=... / ?_t=...&_e=...)
+//   WatchFooty               : token AND expiry in the PATH  (/secure/<TOKEN>/.../<EXPIRY>/playlist.m3u8)
+//
+// Copying only search/host/protocol refreshes the token for the query providers
+// but leaves WatchFooty's path token dead, so the upstream keeps rejecting it.
+// Equally, blindly using the fresh URL would "crush" a variant request: a player
+// polling 1080p/chunklist.m3u8 would be handed the master playlist instead.
+//
+// So: adopt the fresh token/host/expiry, but keep whichever FILENAME the player
+// asked for. Same filename -> the fresh URL verbatim is already correct.
+function mergeRemintedUrl(heldUrl, freshUrl) {
+    try {
+      const held = new URL(heldUrl);
+      const fresh = new URL(freshUrl);
+      const heldParts = held.pathname.split('/');
+      const freshParts = fresh.pathname.split('/');
+      const dirCount = freshParts.length - 1;
+      const mergedParts = freshParts.slice(0, dirCount).concat(heldParts.slice(dirCount));
+      const merged = new URL(freshUrl);
+      merged.pathname = mergedParts.join('/');
+      return merged.toString();
+    } catch (_) {
+      return freshUrl;
+    }
+  }
 
 function readRck(req) {
   try {
@@ -671,18 +703,29 @@ app.get('/api/manifest', async (req, res) => {
     let fetchPromise = manifestInFlight.get(cacheKey);
     if (!fetchPromise) {
       fetchPromise = (async () => {
-        // Attempt the upstream fetch. If the embedded token has expired, mint a
-        // fresh one and retry once, transparently — the viewer sees no failure.
         let effectiveUrl = targetUrl;
         let reminted = false;
+
+        if (rck) {
+          const cached = remintCache.get(rck);
+          if (cached && Date.now() < cached.expiresAt) {
+            effectiveUrl = mergeRemintedUrl(effectiveUrl, cached.freshUrl);
+            reminted = true;
+          }
+        }
+
         let out;
         try {
           out = await fetchUpstreamManifest(effectiveUrl, referer, origin);
         } catch (firstErr) {
-          const fresh = isExpiryStatus(firstErr) ? await attemptRemint(rck) : null;
+          const fresh = (isExpiryStatus(firstErr) && rck) ? await attemptRemint(rck) : null;
           if (!fresh || fresh === effectiveUrl) throw firstErr;
+          
           console.log('[ManifestProxy] Upstream token expired — re-minted, retrying transparently');
-          effectiveUrl = fresh;
+          remintCache.set(rck, { freshUrl: fresh, expiresAt: Date.now() + 15 * 60 * 1000 });
+          
+          // Preserve the variant the player asked for (see mergeRemintedUrl).
+          effectiveUrl = mergeRemintedUrl(targetUrl, fresh);
           reminted = true;
           out = await fetchUpstreamManifest(effectiveUrl, referer, origin);
         }
@@ -770,7 +813,9 @@ app.get('/api/manifest', async (req, res) => {
           }
 
           if (proxyChunks && (absoluteUrl.includes('.ts') || absoluteUrl.includes('.mp4') || absoluteUrl.includes('.vtt') || absoluteUrl.includes('.aac') || absoluteUrl.includes('.m4s') || absoluteUrl.includes('.m4a') || absoluteUrl.includes('.m4v') || absoluteUrl.includes('.js') || absoluteUrl.includes('.image'))) {
-            return `/api/hlschunk?url=${encodeURIComponent(absoluteUrl)}`;
+            let chunkUrl = `/api/hlschunk?url=${encodeURIComponent(absoluteUrl)}`;
+            if (referer) chunkUrl += `&referer=${encodeURIComponent(referer)}`;
+            return chunkUrl;
           }
 
           if ((absoluteUrl.includes('.image') || absoluteUrl.includes('.js')) && !absoluteUrl.includes('.ts') && !absoluteUrl.includes('.m3u8') && !absoluteUrl.includes('.m4s')) {
