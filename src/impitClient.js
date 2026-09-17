@@ -25,7 +25,7 @@ function getImpit() {
   if (_impitInstance !== undefined) return _impitInstance;
   try {
     const { Impit } = require('impit');
-    _impitInstance = new Impit();
+    _impitInstance = new Impit({ browser: 'chrome142' });
     console.log('[impitClient] impit native client loaded successfully.');
   } catch (e) {
     _impitInstance = null;
