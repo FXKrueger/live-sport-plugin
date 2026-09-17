@@ -198,13 +198,26 @@ app.get('/img/placeholder', (req, res) => {
 app.get('/img', async (req, res) => {
   const text = req.query.text || 'Live Sports';
   const color = req.query.color || '333333';
+  const embed = req.query.embed === '1' || req.query.embed === 'true';
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
 
   const entry = await imageService.getImage(req.query.url);
   if (entry) {
-    res.setHeader('Content-Type', entry.contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    if (embed && !entry.contentType.includes('svg')) {
+      const bg = /^([0-9a-fA-F]{6})$/.test(String(color)) ? `#${color}` : '#333333';
+      const b64 = entry.buffer.toString('base64');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+  <rect width="800" height="450" fill="#111111"/>
+  <rect x="0" y="0" width="800" height="10" fill="${bg}"/>
+  <rect x="0" y="440" width="800" height="10" fill="${bg}"/>
+  <image href="data:${entry.contentType};base64,${b64}" x="50%" y="50%" width="300" height="300" transform="translate(-150, -150)"/>
+</svg>`;
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.send(svg);
+    }
+    res.setHeader('Content-Type', entry.contentType);
     return res.send(entry.buffer);
   }
   const svg = imageService.svgPlaceholder(text, color);

@@ -205,8 +205,8 @@ function mapMatchToMetaPreview(match, config = {}) {
   // Self-hosted image proxy: serves the upstream image from cache and falls
   // back to a generated placeholder when the source is dead, so the client
   // never sees a broken image.
-  const buildImg = (sourceUrl, fbText, c) =>
-    imageService.proxyUrl(BASE_URL, sourceUrl, { text: fbText, color: c });
+  const buildImg = (sourceUrl, fbText, c, embed = false) =>
+    imageService.proxyUrl(BASE_URL, sourceUrl, { text: fbText, color: c, embed });
 
   let poster = fallbackPoster;
   const channelLogo = getChannelLogo(match.title);
@@ -220,16 +220,16 @@ function mapMatchToMetaPreview(match, config = {}) {
   if (matchPoster) {
     poster = buildImg(matchPoster, posterText, color) || fallbackPoster;
   } else if (channelLogo) {
-    poster = buildImg(channelLogo, match.title, '161616') || fallbackPoster;
+    poster = buildImg(channelLogo, match.title, '161616', true) || fallbackPoster;
     logo = channelLogo;
   } else if (matchThumb) {
     const isLogo = match.category === 'networks' || matchThumb.toLowerCase().includes('logo') || matchThumb.toLowerCase().includes('icon');
-    poster = buildImg(matchThumb, posterText, color) || fallbackPoster;
+    poster = buildImg(matchThumb, posterText, color, isLogo) || fallbackPoster;
     if (isLogo && !logo) {
       logo = matchThumb;
     }
   } else if (team1Logo) {
-    poster = buildImg(team1Logo, posterText, color) || fallbackPoster;
+    poster = buildImg(team1Logo, posterText, color, true) || fallbackPoster;
     if (!logo) logo = team1Logo;
   }
 
@@ -238,6 +238,8 @@ function mapMatchToMetaPreview(match, config = {}) {
   }
   
   const matchBackground = match.background ? normalizeImageUrl(match.background) : null;
+  // If the poster was embedded, embed the background too since it defaults to poster
+  const embedBg = (!matchBackground && poster.includes('embed=1')) || false;
   let background = matchBackground ? (buildImg(matchBackground, posterText, color) || poster) : poster;
 
   let timeString = match.category === 'networks' ? '24/7 Stream' : 'Live Now';

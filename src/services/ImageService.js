@@ -162,10 +162,12 @@ async function getImage(rawUrl) {
  * upstream image or falls back to the generated placeholder, so a dead source
  * URL never reaches the client as a broken image.
  */
-function proxyUrl(baseUrl, sourceUrl, { text = '', color = '333333' } = {}) {
+function proxyUrl(baseUrl, sourceUrl, { text = '', color = '333333', embed = false } = {}) {
   const validUrl = normalizeUrl(sourceUrl);
   if (!validUrl) return null;
-  return `${baseUrl}/img?url=${encodeURIComponent(validUrl)}&text=${encodeURIComponent(text)}&color=${color}`;
+  let url = `${baseUrl}/img?url=${encodeURIComponent(validUrl)}&text=${encodeURIComponent(text)}&color=${color}`;
+  if (embed) url += '&embed=1';
+  return url;
 }
 
 function placeholderUrl(baseUrl, text, color) {
