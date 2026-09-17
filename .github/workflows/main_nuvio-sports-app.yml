@@ -22,8 +22,6 @@ jobs:
           node-version: '22.x'
 
       - name: Install dependencies and build
-        env:
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
         run: |
           npm install
           cd resolver && npm install && cd ..
