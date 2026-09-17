@@ -1089,7 +1089,7 @@ app.get('/:config?/manifest.json', (req, res, next) => {
     const enabledSports = parsedConfig.sports.split(',');
     
     // General catalogs to always keep
-    const keepCatalogs = ['nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_teams'];
+    const keepCatalogs = ['nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_teams', 'nuvio_sports_networks'];
     
     // Add specific catalogs based on selection
     const sportCatalogs = ['football', 'cricket', 'basketball', 'motorsport', 'hockey', 'baseball', 'mma', 'golf', 'tennis', 'rugby', 'american_football', 'darts'];
@@ -1118,7 +1118,7 @@ app.get('/:config?/manifest.json', (req, res, next) => {
       // Always-keep catalogs: not tied to a single sport.
       const ALWAYS_KEEP = new Set([
         'nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_replays',
-        'nuvio_sports_teams', 'nuvio_sports_other'
+        'nuvio_sports_teams', 'nuvio_sports_other', 'nuvio_sports_networks'
       ]);
       newManifest.catalogs = newManifest.catalogs.filter((c) => {
         if (ALWAYS_KEEP.has(c.id)) return true;
