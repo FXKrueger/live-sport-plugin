@@ -8,7 +8,7 @@ const M3U8ParserService = require('./services/M3U8ParserService');
 const MatchAggregator = require('./services/MatchAggregator');
 const StreamScoringService = require('./services/StreamScoringService');
 const TimStreamsProvider = require('./providers/TimStreamsProvider');
-// const IptvOrgProvider = require('./providers/IptvOrgProvider'); // disabled: 24/7 channels removed
+const IptvOrgProvider = require('./providers/IptvOrgProvider');
 
 const WatchFootyProvider = require('./providers/WatchFootyProvider');
 const CdnLiveProvider = require('./providers/CdnLiveProvider');
@@ -44,7 +44,7 @@ const yamlProviders = yamlBuilder.buildProviders(container, container.resolve('c
 // Register Providers
 container.register({
   timStreamsProvider: asClass(TimStreamsProvider).singleton(),
-  // iptvOrgProvider: asClass(IptvOrgProvider).singleton(), // disabled: 24/7 channels removed
+  iptvOrgProvider: asClass(IptvOrgProvider).singleton(),
 
   watchFootyProvider: asClass(WatchFootyProvider).singleton(),
   cdnLiveProvider: asClass(CdnLiveProvider).singleton(),
