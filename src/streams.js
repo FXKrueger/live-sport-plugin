@@ -2,7 +2,10 @@ const container = require('./container');
 
 // Source selection (shared by handleStream and prewarmMatch)
 function selectSources(matchSources, config) {
-  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'replayzone': 2, 'watchfooty': 2, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'timstreams': 9, 'streamsports': 13, 'embedindia': 15 };
+  // Fractional values slot the fork-only providers into their pre-merge relative
+  // order (streamfree > ppv > sportsindx > watchfooty > ntv > the rest) without
+  // disturbing any upstream priority.
+  const SOURCE_PRIORITY = { admin: 1, echo: 1, golf: 1, delta: 1, 'streamfree': 1.6, 'ppv': 1.7, 'sportsindx': 1.8, 'replayzone': 2, 'watchfooty': 2, 'ntv': 2.5, 'cdnlive': 3, 'streamsports99': 4, 'streamic': 5, 'timstreams': 9, 'sportyhunter': 12, 'streamsports': 13, 'embedindia': 15 };
   const sortedSources = [...matchSources].sort((a, b) => {
     // Unknown sources that are not known fallback providers are likely new
     // Streamed.pk sources - priority 1.5 keeps them near the top.
@@ -15,7 +18,7 @@ function selectSources(matchSources, config) {
 
   if (config && typeof config.sources === 'string' && config.sources !== 'none') {
     const enabled = config.sources.split(',');
-    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'embedindia', 'embedst', 'streamedpk', 'replayzone'];
+    const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'embedindia', 'embedst', 'streamedpk', 'replayzone', 'streamfree', 'ppv', 'ntv', 'sportsindx', 'sportyhunter'];
     return sortedSources.filter(src => {
       if (src.source.startsWith('yaml_')) return true;
       const isFallback = KNOWN_FALLBACKS.includes(src.source);
@@ -26,7 +29,7 @@ function selectSources(matchSources, config) {
     });
   }
 
-  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'embedst', 'streamedpk', 'replayzone'];
+  const KNOWN_FALLBACKS = ['watchfooty', 'cdnlive', 'streamsports99', 'streamic', 'timstreams', 'streamsports', 'embedst', 'streamedpk', 'replayzone', 'streamfree', 'ppv', 'ntv', 'sportsindx', 'sportyhunter'];
   return sortedSources.filter(src => {
     if (src.source.startsWith('yaml_')) return true;
     return KNOWN_FALLBACKS.includes(src.source);
@@ -66,6 +69,24 @@ async function resolveSource(src, match, config) {
       resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
     } else if (sourceName === 'replayzone') {
       const provider = container.resolve('replayzoneProvider');
+      resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
+    } else if (sourceName === 'streamfree') {
+      const provider = container.resolve('streamFreeProvider');
+      // StreamFree keys its catalog off the provider's own category, which the
+      // aggregator preserves as original_category when it merges feeds.
+      const category = src.original_category || match.category;
+      resStreams = await provider.resolveStream(src.id, category, match.title);
+    } else if (sourceName === 'ppv') {
+      const provider = container.resolve('ppvProvider');
+      resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
+    } else if (sourceName === 'ntv') {
+      const provider = container.resolve('ntvProvider');
+      resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
+    } else if (sourceName === 'sportsindx') {
+      const provider = container.resolve('sportsindxProvider');
+      resStreams = await provider.resolveStream(src.id, match.category, match.title);
+    } else if (sourceName === 'sportyhunter') {
+      const provider = container.resolve('sportyHunterProvider');
       resStreams = await provider.resolveStream(src.id, match.category, match.title, src);
     } else if (sourceName.startsWith('yaml_')) {
       const yamlProviders = container.resolve('yamlProviders');

@@ -137,8 +137,11 @@ function _tryExtractTeams(title) {
 // ────────────────────────────────────────────────────────────────────────────
 
 class MatchAggregator {
-  constructor({ timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider}) {
-    this.providers = [timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || []), replayzoneProvider];
+  constructor({ timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider, streamFreeProvider, ppvProvider, ntvProvider, sportsindxProvider, sportyHunterProvider }) {
+    // Order matters for canonical naming/posters: richer providers first. The
+    // fork-only providers (streamfree, ppv, sportsindx, ntv, sportyhunter) are
+    // interleaved by the same richness rule used before the upstream merge.
+    this.providers = [streamFreeProvider, streamedPkProvider, ppvProvider, watchFootyProvider, sportsindxProvider, ntvProvider, timStreamsProvider, streamSports99Provider, cdnLiveProvider, streamicProvider, sportyHunterProvider, ...(yamlProviders || []), replayzoneProvider];
     this.cacheService = cacheService;
   }
 

@@ -17,6 +17,14 @@ const EmbedIndiaProvider = require('./providers/EmbedIndiaProvider');
 const EmbedStProvider = require('./providers/EmbedStProvider');
 const StreamedPkProvider = require('./providers/StreamedPkProvider');
 
+// Fork-only providers (not present upstream).
+const StreamFreeProvider = require('./providers/StreamFreeProvider');
+const PpvProvider = require('./providers/PpvProvider');
+const NtvProvider = require('./providers/NtvProvider');
+const SportsindxProvider = require('./providers/SportsindxProvider');
+const SportyHunterProvider = require('./providers/SportyHunterProvider');
+const EmbedResolver = require('./services/EmbedResolver');
+
 const YamlProviderBuilder = require('./services/YamlProviderBuilder');
 const StreamResolveCache = require('./services/StreamResolveCache');
 
@@ -51,6 +59,15 @@ container.register({
   embedIndiaProvider: asClass(EmbedIndiaProvider).singleton(),
   embedStProvider: asClass(EmbedStProvider).singleton(),
   streamedPkProvider: asClass(StreamedPkProvider).singleton(),
+
+  // Fork-only providers.
+  embedResolver: asClass(EmbedResolver).singleton(),
+  streamFreeProvider: asClass(StreamFreeProvider).singleton(),
+  ppvProvider: asClass(PpvProvider).singleton(),
+  ntvProvider: asClass(NtvProvider).singleton(),
+  sportsindxProvider: asClass(SportsindxProvider).singleton(),
+  sportyHunterProvider: asClass(SportyHunterProvider).singleton(),
+
   yamlProviders: asValue(yamlProviders)
 });
 
