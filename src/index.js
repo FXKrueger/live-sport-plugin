@@ -1210,6 +1210,15 @@ app.get('/api/proxy-embed', async (req, res) => {
 
 
 // Mount the HLS Video Proxy (routes to the internal resolver on port RESOLVER_PORT)
+// ─── /api/hls — stable, self-healing HLS gateway (see services/HlsGateway) ────
+// One permanent URL per verified stream. The gateway holds the short-lived
+// upstream token server-side and re-mints it when it dies, so the player keeps
+// playing instead of erroring out mid-game.
+const hlsGateway = container.resolve('hlsGateway');
+app.get('/api/hls/:key/index.m3u8', (req, res) => hlsGateway.serveIndex(req, res));
+app.get('/api/hls/:key/sub.m3u8', (req, res) => hlsGateway.serveSub(req, res));
+app.get('/api/hls/:key/seg', (req, res) => hlsGateway.serveSegment(req, res));
+
 app.use('/api', createProxyMiddleware({
   target: `http://127.0.0.1:${RESOLVER_PORT}/api`,
   changeOrigin: true,
@@ -1264,12 +1273,12 @@ app.use((req, res, next) => {
         const rewriteUrl = (url) => {
           if (!url || typeof url !== 'string') return url;
           // Relative URLs
-          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/logo') || url.startsWith('/api/mp4proxy') || url.startsWith('/api/fastmp4') || url.startsWith('/api/hlschunk')) {
+          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/api/hls/') || url.startsWith('/logo') || url.startsWith('/api/mp4proxy') || url.startsWith('/api/fastmp4') || url.startsWith('/api/hlschunk')) {
             modified = true;
             return `${currentBaseUrl}${url}`;
           }
           // Absolute URLs with legacy/static base or localhost/LAN IP
-          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|api\/mp4proxy|api\/fastmp4|api\/hlschunk|logo)(?:[?\/].*)?)$/);
+          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|api\/hls|api\/mp4proxy|api\/fastmp4|api\/hlschunk|logo)(?:[?\/].*)?)$/);
           if (match) {
             modified = true;
             return `${currentBaseUrl}${match[1]}`;

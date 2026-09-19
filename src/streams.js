@@ -1,4 +1,76 @@
 const container = require('./container');
+const HlsGateway = require('./services/HlsGateway');
+
+const GATEWAY_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+
+// Referer each provider's CDN expects when the token is presented without the
+// originating page. Used by the HLS gateway, which fetches server-side.
+const DIRECT_REFERERS = {
+  streamedpk: 'https://embed.st/',
+  ntv: 'https://embed.st/',
+  watchfooty: 'https://watchfooty.st/',
+  cdnlive: 'https://cdnlivetv.tv/',
+  streamic: 'https://streamic.st/',
+  streamsports99: 'https://streamsports99.fun/',
+  sportyhunter: 'https://sportyhunter.xyz/'
+};
+
+/** Unwrap a stream into the raw upstream URL + headers the gateway must send. */
+function toUpstream(s) {
+  if (!s || !s.url) return null;
+  let upstream = s.url, referer = '', origin = '';
+  if (upstream.includes('/api/manifest')) {
+    try {
+      const u = new URL(upstream, 'http://localhost');
+      upstream = u.searchParams.get('url') || upstream;
+      referer = u.searchParams.get('referer') || '';
+      origin = u.searchParams.get('origin') || '';
+    } catch (_) {}
+  }
+  if (!referer && s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request) {
+    referer = s.behaviorHints.proxyHeaders.request.Referer || '';
+  }
+  if (!referer) referer = DIRECT_REFERERS[s._source] || '';
+  if (!origin && referer) { try { origin = new URL(referer).origin; } catch (_) {} }
+  if (!/^https?:\/\//.test(upstream)) return null;
+  return { upstream, referer, origin, relay: true };
+}
+
+/** Give a verified stream a permanent /api/hls identity and register it. */
+function toGatewayUrl(s, matchId) {
+  const up = toUpstream(s);
+  if (!up || !s._cacheKey) return null;
+  const parts = s._cacheKey.split(':');
+  const source = parts[0];
+  const srcId = parts.slice(2).join(':');
+  const key = HlsGateway.encodeKey({ source, matchId: parts[1], srcId, idx: s._idx || 0 });
+  container.resolve('hlsGateway').register(key, { ...up, source });
+  const { BASE_URL } = require('./config');
+  return `${BASE_URL}/api/hls/${key}/index.m3u8`;
+}
+
+/**
+ * Drop the cached mint for one source and resolve + verify it again.
+ * Returns the fresh upstream list in the same order as the original mint, so
+ * HlsGateway can keep serving the n-th stream under the same key.
+ */
+async function remintForKey({ source, matchId, srcId }) {
+  const resolveCache = container.resolve('streamResolveCache');
+  const key = `${source}:${matchId}:${srcId}`;
+  let src, match;
+  if (matchId === '__channel__') {
+    src = { source, id: srcId, original_category: 'cricket' };
+    match = { id: matchId, category: 'cricket', title: String(srcId) };
+  } else {
+    match = container.resolve('cacheService').getMatches().find(m => m.id === matchId);
+    if (!match) return [];
+    src = (match.sources || []).find(x => x.source === source && String(x.id) === String(srcId));
+    if (!src) return [];
+  }
+  resolveCache.entries.delete(key);
+  const minted = await resolveCache.getOrCreate(key, () => mintVerifiedSources(src, match, null, key));
+  return (minted || []).map(toUpstream).filter(Boolean);
+}
 
 // Source selection (shared by handleStream and prewarmMatch)
 function selectSources(matchSources, config) {
@@ -342,7 +414,7 @@ async function handleStream(type, id, config) {
     const key = `${src.source}:${matchId}:${src.id}`;
     const promise = resolveCache
       .getOrCreate(key, () => mintVerifiedSources(src, match, config, key))
-      .then((minted) => (Array.isArray(minted) ? minted.map((st) => ({ ...st, _cacheKey: key })) : []))
+      .then((minted) => (Array.isArray(minted) ? minted.map((st, i) => ({ ...st, _cacheKey: key, _idx: i })) : []))
       .catch(() => []);
     inFlight.push({ key, promise });
     // Wrap so we can tell "settled in time" from "still running".
@@ -465,7 +537,26 @@ async function handleStream(type, id, config) {
     // Add behaviorHints to group streams and handle CORS for direct streams
     s.behaviorHints = s.behaviorHints || {};
     s.behaviorHints.bingeGroup = `nuvio_sport_${matchId}`;
-    
+
+    // Direct streams go through the self-healing HLS gateway: one permanent
+    // URL per stream, headers applied server-side, and an automatic re-mint
+    // when the upstream token dies mid-game, so the player never has to be
+    // re-opened. Web embeds keep the client path — there is nothing to relay.
+    if (!isWeb && s.url) {
+      const gw = toGatewayUrl(s, matchId);
+      if (gw) {
+        const up = toUpstream(s);
+        s.url = gw;
+        s.behaviorHints.notWebReady = true;
+        if (up && up.referer) {
+          s.behaviorHints.proxyHeaders = { request: { 'Referer': up.referer, 'Origin': up.origin || up.referer.replace(/\/$/, ''), 'User-Agent': GATEWAY_UA } };
+        } else {
+          delete s.behaviorHints.proxyHeaders;
+        }
+        return;
+      }
+    }
+
     // If it's a direct m3u8 stream and not routed through our proxy, mark it notWebReady
     if (s.url && s.url.includes('.m3u8') && !s.url.includes('/api/manifest')) {
       s.behaviorHints.notWebReady = true;
@@ -573,5 +664,7 @@ module.exports = {
   prewarmMatch,
   // Exported so the manifest proxy can transparently re-mint a single expired
   // source without going through the full stream-list path (see src/index.js).
-  resolveSource
+  resolveSource,
+  // Used by HlsGateway to re-mint a dead source under a stable /api/hls key.
+  remintForKey
 };
