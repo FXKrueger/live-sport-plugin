@@ -39,12 +39,6 @@ class StreamFreeProvider extends BaseProvider {
     );
   }
 
-  normalizeCategory(cat) {
-    let norm = String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (norm === 'football') return 'american_football';
-    return super.normalizeCategory(cat);
-  }
-
   async getMatches() {
     const matches = [];
     try {
@@ -79,117 +73,84 @@ class StreamFreeProvider extends BaseProvider {
 
   async resolveStream(sourceId, matchCategory, matchTitle) {
     try {
-      const { safeFetch } = require('../impitClient');
-      const { BASE_URL } = require('../config');
-      const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
-      const resScore = (q) => { const m = String(q).match(/(\d+)/); return m ? parseInt(m[1], 10) : 0; };
+      const embedUrl = `https://streamfree.top/embed/${matchCategory}/${sourceId}`;
+      
+      // Scrape internally
+      const html = await this.embedFetcher.fire(embedUrl);
+      if (!html) return [];
 
-      // ── Step 1: Find all available sources from stream-status ────────────────
-      // Sources keyed "1".."5". Source 1 = main embed (suffix ''), 2..5 = backup (suffix '2'..'5').
-      let availableSources = [];
+      const match = html.match(/const\s+_0x\s*=\s*(\{.*?\});/);
+      if (!match) throw new Error("Could not find _0x tokens in StreamFree HTML");
+
+      const tokens = JSON.parse(match[1]);
+
+      // Fetch the stream status to find available qualities.
+      // Current API shape: { sources: { "1": { qualities: {...}, available }, ... } }
+      const statusUrl = `https://streamfree.top/api/stream-status/${sourceId}`;
+      const availableQualities = {};
       try {
-        const statusRes = await safeFetch(`https://streamfree.top/api/stream-status/${sourceId}`, {
-          headers: { 'User-Agent': UA },
-          timeoutMs: 8000
+        const { request } = require('undici');
+        const statusRes = await request(statusUrl, {
+           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' }
         });
-        if (statusRes.status === 200) {
-          const statusData = await statusRes.json();
-          const sources = statusData.sources || {};
-          for (const [num, s] of Object.entries(sources)) {
-            if (s && s.available) {
-              availableSources.push({
-                srcNum: num,
-                suffix: num === '1' ? '' : num,
-                qualities: s.qualities || {}
-              });
-            }
-          }
-        }
+        if (statusRes.statusCode === 200) {
+           const statusData = await statusRes.body.json();
+           for (const s of Object.values(statusData.sources || {})) {
+             if (s && s.available && s.qualities) {
+               for (const [q, ok] of Object.entries(s.qualities)) {
+                 if (ok) availableQualities[q] = true;
+               }
+             }
+           }
+         }
       } catch (e) {
-        console.warn(`[StreamFree] stream-status fetch failed for ${sourceId}:`, e.message);
+        console.warn(`[StreamFree] Failed to fetch stream status for ${sourceId}`);
       }
 
-      // If stream-status gave us nothing, fall back to source 1 only
-      if (availableSources.length === 0) {
-        availableSources = [{ srcNum: '1', suffix: '', qualities: {} }];
+      // Quality selection driven by the token keys actually present (the API
+      // has drifted: 2160p exists now), preferring higher resolution and
+      // intersecting with stream-status availability when known.
+      const resScore = (q) => { const m = String(q).match(/(\d+)/); return m ? parseInt(m[1], 10) : 0; };
+      const tokenKeys = Object.keys(tokens).filter(k => tokens[k] && tokens[k]._t);
+      const bestQuality =
+        tokenKeys.filter(q => availableQualities[q]).sort((a, b) => resScore(b) - resScore(a))[0] ||
+        tokenKeys.sort((a, b) => resScore(b) - resScore(a))[0] ||
+        null;
+      const t = bestQuality ? tokens[bestQuality] : null;
+
+      if (!bestQuality || !t) throw new Error("No suitable stream qualities found");
+
+      // Fetch the stream key to determine if it's on a CDN or origin
+      const streamKeyUrl = `https://streamfree.top/get-stream-key/${sourceId}`;
+      const streamKeyData = await this.streamKeyFetcher.fire(streamKeyUrl);
+      
+      let baseUrl = '';
+      if (streamKeyData && streamKeyData.is_external && streamKeyData.external_url) {
+         baseUrl = streamKeyData.external_url;
+      } else {
+         const serverName = (streamKeyData && streamKeyData.server_name) ? streamKeyData.server_name : 'origin';
+         if (serverName !== 'origin') {
+            baseUrl = `https://streamfree.top/live-cdn/${sourceId}${bestQuality}/index.m3u8`;
+         } else {
+            baseUrl = `https://streamfree.top/live-origin/${sourceId}${bestQuality}/index.m3u8`;
+         }
       }
+      
+      const targetUrl = `${baseUrl}?_t=${t._t}&_e=${t._e}&_n=${t._n}`;
 
-      // ── Step 2: Fetch stream-key once (same endpoint for all sources) ─────────
-      let streamKeyData = null;
-      try {
-        streamKeyData = await this.streamKeyFetcher.fire(`https://streamfree.top/get-stream-key/${sourceId}`);
-      } catch (e) {
-        console.warn(`[StreamFree] get-stream-key failed for ${sourceId}:`, e.message);
-      }
+      const referer = embedUrl;
+      const { BASE_URL } = require('../config');
+      const proxyUrl = `${BASE_URL}/api/manifest?url=${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(referer)}&origin=https://streamfree.top`;
 
-      // ── Step 3: For each available source, fetch its embed + build stream ────
-      const streams = [];
-      for (const src of availableSources) {
-        try {
-          // Each source has its own embed page with its own _0x token set
-          const embedUrl = `https://streamfree.top/embed/${matchCategory}/${sourceId}${src.suffix}`;
-          const html = await this.embedFetcher.fire(embedUrl);
-          if (!html) continue;
-
-          const tokenMatch = html.match(/const\s+_0x\s*=\s*(\{.*?\});/);
-          if (!tokenMatch) {
-            console.warn(`[StreamFree] No _0x tokens in embed for ${sourceId}${src.suffix}`);
-            continue;
-          }
-          const tokens = JSON.parse(tokenMatch[1]);
-
-          // Emit the top few qualities rather than only the single "best" one.
-          // Upstream is inconsistent about which resolutions actually exist: for
-          // the same channel 2160p commonly answers 404/403 while 1080p serves
-          // normally (observed on RedZone and Willow). Committing to the highest
-          // resolution meant one dead top rung produced ZERO working streams, even
-          // though a lower rung was live. Downstream health-checking (verifyStreams)
-          // drops whichever of these are dead, so emitting several is safe and
-          // guarantees a working option survives whenever one exists.
-          const tokenKeys = Object.keys(tokens).filter(k => tokens[k] && tokens[k]._t);
-          const confirmed = tokenKeys.filter(q => src.qualities[q]);
-          const ordered = (confirmed.length ? confirmed : tokenKeys).sort((a, b) => resScore(b) - resScore(a));
-          const qualityRungs = ordered.slice(0, 3);
-          if (qualityRungs.length === 0) continue;
-
-          const serverName = (streamKeyData && streamKeyData.server_name) ? streamKeyData.server_name : 'origin';
-
-          for (const quality of qualityRungs) {
-            const t = tokens[quality];
-            if (!t || !t._t) continue;
-
-            // Build the .m3u8 URL — path uses key + quality + source suffix
-            // (template verified against the upstream embed page script).
-            let targetUrl = '';
-            if (streamKeyData && streamKeyData.is_external && streamKeyData.external_url) {
-              targetUrl = streamKeyData.external_url;
-            } else {
-              const pathSegment = `${sourceId}${quality}${src.suffix}`;
-              const hlsPath = serverName !== 'origin'
-                ? `https://streamfree.top/live-cdn/${pathSegment}/index.m3u8`
-                : `https://streamfree.top/live-origin/${pathSegment}/index.m3u8`;
-              targetUrl = `${hlsPath}?_t=${t._t}&_e=${t._e}&_n=${t._n}`;
-            }
-
-            const proxyUrl = `${BASE_URL}/api/manifest?url=${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(embedUrl)}&origin=https://streamfree.top&proxyChunks=1`;
-            const label = src.suffix
-              ? `StreamFree S${src.srcNum} (${quality})`
-              : `StreamFree (${quality})`;
-
-            streams.push(new StreamEntity({
-              name: 'StreamFree',
-              title: label,
-              url: proxyUrl,
-              behaviorHints: { notWebReady: true },
-              resolution: quality
-            }));
-          }
-        } catch (srcErr) {
-          console.warn(`[StreamFree] Failed source ${src.srcNum} for ${sourceId}:`, srcErr.message);
-        }
-      }
-
-      return streams;
+      return [new StreamEntity({
+        name: 'StreamFree',
+        title: `StreamFree (${bestQuality})`,
+        url: proxyUrl,
+        behaviorHints: {
+          notWebReady: true
+        },
+        resolution: bestQuality
+      })];
     } catch (error) {
       console.error(`[${this.name}] resolveStream failed for ${sourceId}:`, error.message);
       return [];
