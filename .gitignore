@@ -5,4 +5,6 @@ node_modules/
 scratch/
 cloudflared.exe
 *.exe
-
+dist/*.node
+dist_wasm/
+nuvio-proxy-2/
