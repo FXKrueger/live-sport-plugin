@@ -56,18 +56,34 @@ function svgPlaceholder(text, color, w = 800, h = 450) {
   const bg = /^([0-9a-fA-F]{6})$/.test(String(color)) ? `#${color}` : '#333333';
   const rawLines = String(text || 'Live Sports').split('\n').map(l => l.trim()).filter(Boolean).slice(0, 3);
   const lines = rawLines.length ? rawLines : ['Live Sports'];
-  const fontSize = lines.length >= 3 ? 40 : lines.length === 2 ? 48 : 56;
-  const startY = h / 2 - ((lines.length - 1) * (fontSize + 10)) / 2 + fontSize * 0.35;
+  const fontSize = lines.length >= 3 ? 38 : lines.length === 2 ? 46 : 54;
+  const startY = h / 2 - ((lines.length - 1) * (fontSize + 12)) / 2 + fontSize * 0.35;
   const textEls = lines.map((line, i) => {
     let l = line;
     if (l.length > 26) l = l.slice(0, 25) + '…';
-    const y = startY + i * (fontSize + 10);
-    return `<text x="50%" y="${y.toFixed(1)}" font-family="Segoe UI, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="middle">${escapeXml(l)}</text>`;
+    const y = startY + i * (fontSize + 12);
+    return `<text x="50%" y="${y.toFixed(1)}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="${fontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" dominant-baseline="middle" filter="url(#textShadow)">${escapeXml(l)}</text>`;
   }).join('\n  ');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-  <rect width="${w}" height="${h}" fill="#111111"/>
-  <rect x="0" y="0" width="${w}" height="10" fill="${bg}"/>
-  <rect x="0" y="${h - 10}" width="${w}" height="10" fill="${bg}"/>
+  <defs>
+    <linearGradient id="holderBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#181b22"/>
+      <stop offset="50%" stop-color="#101217"/>
+      <stop offset="100%" stop-color="#08090c"/>
+    </linearGradient>
+    <radialGradient id="holderSpot" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.7"/>
+    </filter>
+  </defs>
+  <rect width="${w}" height="${h}" fill="url(#holderBg)"/>
+  <rect width="${w}" height="${h}" fill="url(#holderSpot)"/>
+  <rect x="0" y="0" width="${w}" height="4" fill="${bg}"/>
+  <rect x="0" y="${h - 4}" width="${w}" height="4" fill="${bg}"/>
   ${textEls}
 </svg>`;
 }
@@ -162,10 +178,12 @@ async function getImage(rawUrl) {
  * upstream image or falls back to the generated placeholder, so a dead source
  * URL never reaches the client as a broken image.
  */
-function proxyUrl(baseUrl, sourceUrl, { text = '', color = '333333' } = {}) {
+function proxyUrl(baseUrl, sourceUrl, { text = '', color = '333333', embed = false } = {}) {
   const validUrl = normalizeUrl(sourceUrl);
   if (!validUrl) return null;
-  return `${baseUrl}/img?url=${encodeURIComponent(validUrl)}&text=${encodeURIComponent(text)}&color=${color}`;
+  let url = `${baseUrl}/img?url=${encodeURIComponent(validUrl)}&text=${encodeURIComponent(text)}&color=${color}`;
+  if (embed) url += '&embed=1';
+  return url;
 }
 
 function placeholderUrl(baseUrl, text, color) {

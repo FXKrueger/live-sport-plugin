@@ -7,11 +7,24 @@
 [![Ko-fi](https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/rajodedara)
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white)](https://github.com/rajhodedara/live-sport-plugin)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-3.1.0-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/version-3.0.0-brightgreen.svg)](#)
 
-> ℹ️ **Hosting note:** free PaaS tiers (Render, Railway, Vercel) work but may enforce acceptable-use policies against scrapers and media proxying. A small VPS, a spare PC or a Raspberry Pi behind a Cloudflare Tunnel is the safest long-term home.
+> ⚠️ **IMPORTANT HOSTING NOTICE:**
+> **Do NOT deploy this addon to free/shared PaaS clouds like Render.com, Vercel, or Railway.** Their automated Acceptable Use Policy (AUP) scanners detect web scrapers and media proxying, which will result in **immediate and permanent suspension of your account**.
+> 
+> **Recommended setup:** Self-host on a spare PC / laptop / Raspberry Pi, or use a cheap unmanaged Linux VPS (e.g., Hetzner, DigitalOcean, Oracle Cloud Free Tier) using Docker or Cloudflare Tunnels (`cloudflared`).
 
-> ☕ **Enjoying Nuvio Live Sports?** Consider [supporting the project on Ko-fi](https://ko-fi.com/rajodedara) to help cover maintenance, dedicated scrapers, and infrastructure!
+> 🛡️ **OFFICIAL NOTICE ON THIRD-PARTY FORKS & PAID SERVICES:**
+> - **100% Free & Open-Source:** This project is, and will always remain, completely free and open-source under the MIT license. **There are NO paid subscriptions, NO device limits, and NO license keys.**
+> - **Unauthorized Monetization:** If any third-party fork, website, or instance claims to be this addon while selling "premium access", "license keys", or monthly subscriptions (e.g., via PayPal or crypto), **they are NOT affiliated with, supported by, or endorsed by this project**.
+> - **Content Scope:** This addon exclusively indexes public live sports fixtures. The official repository does not distribute or endorse adult content, shock media, or paid pirated IPTV bundles.
+> - **Official Support:** The only official repository is [github.com/rajhodedara/live-sport-plugin](https://github.com/rajhodedara/live-sport-plugin). Voluntary community support is solely via [Ko-fi](https://ko-fi.com/rajodedara).
+
+> ☕ **Enjoying Nuvio Live Sports?** Help keep the public instance alive and cover server maintenance!
+> - **Credit/Debit/PayPal:** [Support on Ko-fi](https://ko-fi.com/rajodedara)
+> - **Ethereum / Polygon (EVM):** `0x619eA99F0D725BEE8e0CFe9552d5F4099d15724c`
+> - **Solana (SOL):** `CmuehW4PQn4yyQeXqguEpR3DjXwPPdS9Qqo4W5aWN8UU`
+> - **Bitcoin (BTC):** `bc1q9dd4nflxx8ja0vzy2phzsf8h9tr6590txgd07u`
 
 A production-grade live sports streaming add-on for [Nuvio](https://nuvio.tv) and [Stremio](https://www.stremio.com/). It serves as a powerful multi-source aggregator that provides native live sports streams (Football, Basketball, Motorsport, Cricket, and more) inside your client, utilizing an advanced internal stream resolver to bypass CORS restrictions.
 
@@ -102,51 +115,16 @@ pm2 startup
 
 ## ✨ Key Features
 
-- **🏟️ 11 aggregated sources, 7 of them direct:** Streamed, StreamFree, PPV.ST, SportsindX/WatchSports, WatchFooty, NTV and TimStreams resolve to native HLS that plays *inside* Nuvio/Stremio. StreamSports99 and CDNLiveTV are direct when their channel page can be decoded. Streamic and SportyHunter are browser-only and off by default.
-- **🔓 Native decryption, no headless browser:** embed.st (`stream-lock.wasm`), embedindia.st (`gasm.wasm`) and sportsembed.su tokens are minted in-process, so PPV, SportsindX and NTV events become direct streams instead of "open in browser" links.
-- **🧲 Generic embed resolver:** any remaining embed page is fetched server-side, scanned for plain / JSON / base64 / XOR-obfuscated playlists and nested iframes, and promoted to a direct stream when found. Browser fallback stays as the last resort.
-- **⚡ Coalescing HLS manifest proxy (`/api/manifest`):** keep-alive upstream client, in-flight request coalescing and 15 s negative caching so a live player poll never hammers a dead CDN.
-- **🔄 Fresh catalogs:** full provider re-sync every 10 minutes (cron), traffic-driven stale-while-revalidate after 3 minutes, a rate-limited manual **Refresh** button on the dashboard and short client cache hints so Nuvio picks up live status changes quickly.
-- **🛡️ Self-healing HLS gateway (`/api/hls/<key>/…`):** every direct stream gets a permanent URL. The server fetches playlists and segments with the right headers, re-mints the source automatically when a token expires or a CDN node dies, and serves the last good playlist while it does, so the player keeps going instead of erroring out mid-game.
-- **📈 Source reliability scoring:** every verification and playback outcome feeds a rolling score per source. The picker is sorted by that score (then resolution), unreliable sources are hidden while healthier ones exist, and browser streams only show when nothing direct is available.
-- **🧠 Verified, ranked streams:** every direct stream is pre-flighted once per mint (dead 403/404/5xx and fake 200 bodies are dropped), de-duplicated by upstream URL, then sorted direct-first by quality and source reliability. Optional **"Hide browser-only streams"** setting.
-- **🖼️ Resilient image pipeline (`/img`):** cached proxy with generated SVG fallbacks, so posters and crests never break.
-- **🌐 Dynamic host routing:** manifests, streams and images are rewritten to whatever host the client used (Render, Cloudflare Tunnel, LAN IP, custom domain).
-- **⚙️ Clear setup UI:** `/configure` groups sources by *Direct / Mixed / Browser*, offers one-click presets, live link preview and install steps for Nuvio and Stremio. `/` is a dashboard with provider health, a refresh button and a built-in player for testing.
-
-### Source overview
-
-| Source | Kind | Notes |
-|---|---|---|
-| Streamed (streamed.pk) | Direct | admin / echo / delta / golf backends via embed.st WASM |
-| StreamFree | Direct | up to 2160p, team logos, leagues |
-| PPV.ST | Direct | events + 24/7 channels via embedindia.st WASM |
-| SportsindX / WatchSports | Mixed | Streamed backends direct, third-party embeds via generic resolver |
-| WatchFooty | Direct | sportsembed.su native decryption |
-| NTV | Direct | Streamed mirror with posters; catalog fallback when streamed.pk is blocked |
-| TimStreams | Mixed | XOR de-obfuscation, browser fallback |
-| StreamSports99 / CDNLiveTV | Mixed | decoded channel pages, browser fallback |
-| Streamic / SportyHunter | Browser | off by default |
-
-### Refresh tuning (environment variables)
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `CATALOG_SYNC_CRON` | `*/10 * * * *` | full provider re-sync schedule |
-| `CATALOG_REVALIDATE_MS` | `180000` | catalog age after which the next request triggers a background re-sync |
-| `LOW_MEMORY_MODE` | unset | `true` = fetch providers sequentially (256 MB hosts) |
-| `STREAM_DEADLINE_MS` | `8000` | a `/stream` request answers after this with the sources that are ready; the rest keep resolving in the background |
-| `PREWARM_LIVE` / `PREWARM_CRON` / `PREWARM_MAX` | `true` / `*/3 * * * *` / `8` | pre-resolve streams for live matches so the picker opens instantly |
-| `RELAY_SEGMENTS` | `false` | `true` relays media segments through the server (needed for CDNs that bind tokens to the server IP). **Do not enable on Render**: its Cloudflare edge challenges players that request many objects per minute and every segment counts against the bandwidth quota. Fine on a VPS / home server behind a Cloudflare Tunnel. |
-
-### Useful endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/status` | last sync time, per-provider counts and timings, open circuit breakers, stream-cache stats |
-| `POST /api/refresh` | force a re-sync (rate limited to once per 45 s) |
-| `GET /api/sources` | source registry used by the configure page |
-| `GET /health` | liveness probe used by Render / Docker |
+- **🏟️ Multi-Source Live Aggregator:** Concurrently scrapes and unifies live fixtures from 8+ scrapers (Streamed.pk, StreamFree, WatchFooty, SportyHunter, TimStreams, StreamSports99, Streamic, CDNLiveTV) into a deduplicated catalog with merged stream choices.
+- **⚡ Coalescing Zero-Lag HLS Manifest Proxy (`/api/manifest`):** High-speed HLS proxy powered by `impit` with persistent keep-alive connections. Coalesces concurrent in-flight upstream requests (`manifestInFlight`) to eliminate duplicate fetches during live player segment polls and prevent ISP/upstream throttling.
+- **🔐 Native WebAssembly (WASM) Decryption:** Executes native WebAssembly binaries (`stream-lock.wasm`, `gasm.wasm`, `gasm_india.wasm`) directly in Node.js to decrypt obfuscated tokens and unlock protected third-party stream endpoints.
+- **🌐 Universal Dynamic Host Routing:** Zero hardcoded local IPs. Automatically inspects incoming `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `cf-visitor` headers to dynamically rewrite all manifests, streams, and asset URLs to match the client's gateway (local LAN, Cloudflare Tunnels, Ngrok, or custom domains).
+- **🛡️ Opossum Circuit Breakers & Negative Caching:** Every provider scraper is isolated via an Opossum circuit breaker to instantly trip on timeouts or failures. Dead upstreams are negatively cached for 15s so video players seamlessly fail over to alternate sources without freezing.
+- **🖼️ Resilient 100% 200 OK Image Pipeline (`/img`):** High-performance image proxy with LRU caching (`stale-while-revalidate`), protocol-relative normalization (`//`), and dynamic inline SVG fallback cards to ensure clients never encounter broken posters or missing team crests.
+- **🧠 Algorithmic Stream Scoring & Ranking:** Evaluates and sorts stream links in real time based on resolution (1080p > 720p > SD), latency, direct M3U8 vs. webview embeds, audio commentary language, and live viewer counts.
+- **🧱 Clean Architecture & Awilix IoC:** Built with Domain-Driven Design (DDD) entities (`MatchEntity`, `StreamEntity`), modular service layers, and an Awilix Inversion of Control (IoC) dependency injection container.
+- **📄 Declarative YAML Provider Engine:** Includes a dynamic `YamlProviderBuilder` allowing developers to configure and plug in new stream scrapers via declarative YAML definitions without writing boilerplate.
+- **⚙️ Responsive Glassmorphic Web Dashboard:** Includes a local browser player (`/`) and a full configuration interface (`/configure`) to filter sports categories, toggle active providers, localize match kickoffs to your timezone, and track favorite clubs.
 
 ---
 
@@ -202,8 +180,7 @@ npm run generate:provider
 
 Through the interactive `/configure` UI (or via URL-safe base64 config segments), you can customize:
 - **Sports Filtering:** Select from 14+ sports categories (Soccer, Basketball, Cricket, F1 & Racing, NFL, Hockey, Baseball, MMA, Golf, Tennis, Rugby, College Sports, Darts, Other).
-- **Streaming Sources Selection:** Individually enable or disable sources (Streamed, StreamFree, PPV.ST, SportsindX, WatchFooty, NTV, TimStreams, StreamSports99, CDNLiveTV, Streamic, SportyHunter) with *Recommended* / *Direct only* presets.
-- **Hide browser-only streams:** list only streams that play natively inside the app.
+- **Streaming Sources Selection:** Individually enable or disable scrapers (StreamFree, TimStreams, Streamed.pk, SportyHunter, WatchFooty, CDNLiveTV, StreamSports99, Streamic).
 - **Localization & Timezones:** Auto-detects or manually configures your local IANA timezone to render match kick-off schedules in your local time.
 - **Priority Tracking ("⭐ Your Teams"):** Enter comma-separated favorite clubs or athletes (e.g. `Arsenal, Lakers, Ferrari`) to dynamically generate a dedicated priority catalog.
 
@@ -229,10 +206,11 @@ npm run test:247
 
 ---
 
-## ☁️ Deployment Instructions
+## 📄 License & Disclaimer
 
-### Option 1: Render.com (Recommended for One-Click)
-This project is configured for deployment on Render.com using the `render.yaml` blueprint.
-1. Push your repository to GitHub.
-2. Link your repo to Render and create a new **Web Service**.
-3. Render automatically sets up the environment and launches both the Express server and the child resolver process.
+This project is licensed under the [MIT License](LICENSE).
+
+- **Personal & Educational Use:** This software is an experimental media aggregator and protocol scraper developed solely for personal, non-commercial, and educational purposes.
+- **No Hosting of Media:** This addon does not host, broadcast, or store any video content or media streams on its own servers. It merely parses publicly reachable web manifests.
+- **Third-Party Integrity:** The authors assume no liability for unofficial third-party forks, paid reseller bundles, or modified distributions operating under independent domains.
+

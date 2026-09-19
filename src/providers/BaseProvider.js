@@ -1,24 +1,9 @@
 // Hardcoded CF proxy pool — add more URLs to multiply free-tier limits
 const CF_PROXY_POOL = [];
 
-// One keep-alive dispatcher for every provider fetch (was: a new Agent per call).
-let sharedDispatcher = null;
-function getDispatcher() {
-  if (!sharedDispatcher) {
-    const { Agent } = require('undici');
-    sharedDispatcher = new Agent({ connect: { rejectUnauthorized: false, timeout: 15000 }, keepAliveTimeout: 10000 });
-  }
-  return sharedDispatcher;
-}
-
-// Lazy shared Impit client used as the TLS-fingerprint fallback.
-let sharedImpit;
-function getImpit() {
-  if (sharedImpit === undefined) {
-    try { const { Impit } = require('impit'); sharedImpit = new Impit(); } catch (_) { sharedImpit = null; }
-  }
-  return sharedImpit;
-}
+// Safe impit wrapper — falls back to undici when impit native binary is
+// unavailable (ARM64 VPS, Alpine/musl Linux, certain Windows Server builds).
+const { safeFetch: _safeFetch } = require('../impitClient');
 
 // Pick a random proxy from the pool
 function getCfProxyUrl() {
@@ -60,18 +45,34 @@ class BaseProvider {
     cat = String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
     if (cat.includes('americanfootball') || cat.includes('nfl') || cat.includes('afl') || cat.includes('gridiron')) return 'american_football';
     if (cat.includes('soccer') || cat.includes('football')) return 'football';
-    if (cat.includes('motor') || cat.includes('racing') || cat.includes('cycling') || cat.includes('f1')) return 'motorsport';
+    // 'mixedmartialarts' must be caught before the generic checks below — the
+    // upstream label "Mixed Martial Arts" normalized to 'mixedmartialarts', a
+    // string that matched no catalog id and no live-window duration, so every
+    // MMA event was silently invisible (TimStreams was emitting this shape).
+    if (cat.includes('mixedmartialart') || cat.includes('martialart') || cat.includes('mmaglobal')) return 'mma';
     if (cat.includes('fight') || cat.includes('mma') || cat.includes('boxing') || cat.includes('wrestling') || cat.includes('knuckle') || cat.includes('ufc')) return 'mma';
+    if (cat.includes('formula1') || cat.includes('motogp') || cat.includes('moto') || cat.includes('motor') || cat.includes('racing') || cat.includes('cycling') || cat.includes('f1')) return 'motorsport';
     if (cat.includes('basketball') || cat.includes('nba')) return 'basketball';
-    if (cat.includes('golf')) return 'golf';
+    if (cat.includes('pga') || cat.includes('golf')) return 'golf';
     if (cat.includes('rugby')) return 'rugby';
     if (cat.includes('cricket')) return 'cricket';
     if (cat.includes('tennis')) return 'tennis';
     if (cat.includes('hockey') || cat.includes('nhl')) return 'hockey';
     if (cat.includes('baseball') || cat.includes('mlb')) return 'baseball';
     if (cat.includes('darts')) return 'darts';
+    if (cat.includes('ncaa') || cat.includes('college')) return 'college';
     if (cat.includes('liveshow') || cat.includes('uncategorized')) return 'other';
-    return cat;
+
+    // Canonical allowlist. Anything the catalogs do not know about belongs in
+    // 'other' (rendered as "Other Sports") rather than under its own ad-hoc id,
+    // which no catalog queries and which therefore hides the event entirely.
+    const CANONICAL = new Set([
+      'football', 'cricket', 'basketball', 'motorsport', 'hockey', 'baseball',
+      'mma', 'golf', 'tennis', 'rugby', 'american_football', 'darts',
+      'college', 'networks', 'other'
+    ]);
+    if (CANONICAL.has(cat)) return cat;
+    return 'other';
   }
 
   /**
@@ -100,53 +101,19 @@ class BaseProvider {
       url = proxyUrl.toString();
     }
     
-    const { request } = require('undici');
-    try {
-      const reqOptions = {
-        method: options.method || 'GET',
-        headers: options.headers || {},
-        headersTimeout: 15000,
-        bodyTimeout: 15000,
-        signal: options.signal,
-        dispatcher: getDispatcher()
-        // NOTE: undici v8 rejects `maxRedirections` on request() ("use the redirect
-        // interceptor"). Passing it made this branch throw on EVERY call, silently
-        // routing all fetches through the Impit fallback. Redirects are followed
-        // by the Impit fallback when the undici path fails.
-      };
-      
-      if (options.body) reqOptions.body = options.body;
-      
-      const res = await request(url, reqOptions);
-      const textData = await res.body.text();
-      
-      return {
-        ok: res.statusCode >= 200 && res.statusCode < 300,
-        status: res.statusCode,
-        text: async () => textData,
-        json: async () => JSON.parse(textData)
-      };
-    } catch (err) {
-      try {
-        const impitClient = getImpit();
-        if (!impitClient) throw new Error('impit unavailable');
-        const res = await impitClient.fetch(url, {
-          method: options.method || 'GET',
-          headers: options.headers || {},
-          body: options.body
-        });
-        const textData = await res.text();
-        return {
-          ok: res.status >= 200 && res.status < 300,
-          status: res.status,
-          text: async () => textData,
-          json: async () => JSON.parse(textData)
-        };
-      } catch (impitErr) {
-        console.error(`[BaseProvider] Fetch error: ${err.message}`);
-        throw err;
-      }
-    }
+    // safeFetch tries impit first (browser TLS fingerprint), falls back to
+    // undici automatically — works on Windows, Linux x64, ARM64, musl, etc.
+
+    const reqOptions = {
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      body: options.body,
+      timeoutMs: 15000,
+    };
+
+    // safeFetch tries impit first (browser TLS fingerprint), falls back to
+    // undici automatically — works on Windows, Linux x64, ARM64, musl, etc.
+    return await _safeFetch(url, reqOptions);
   }
 
   /**

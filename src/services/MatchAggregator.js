@@ -1,5 +1,30 @@
 // ─── Fuzzy Match Helpers ────────────────────────────────────────────────────
 
+// How long past kickoff a ReplayZone archive session is retained in the
+// aggregated cache. Bounds replay list growth; other providers keep the
+// standard 24h window.
+const REPLAY_RETENTION_DAYS = 30;
+
+/**
+ * Parses a provider-supplied match date into epoch milliseconds.
+ *
+ * Providers are inconsistent: most send a numeric epoch (as number or numeric
+ * string), but ReplayZone sends ISO date strings ("2026-09-14"). A plain
+ * Number() cast turns those into NaN, which the caller then coerces to 0 —
+ * silently disabling the date-window guard in _sameEventPre. That guard is what
+ * stops the same fixture on different days from merging, so losing it merges
+ * unrelated events (observed: a "Chicago Cubs @ Atlanta Braves" replay from May
+ * merged into the September Cubs vs Braves fixture, attaching replay streams to
+ * a live/upcoming listing).
+ */
+function _parseEventDate(raw) {
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isNaN(n) && n > 0) return n;
+  const parsed = Date.parse(String(raw));
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 /**
  * Normalizes team/event names by collapsing well-known multi-word clubs and
  * popular abbreviations into single collision-safe compound tokens so that
@@ -112,16 +137,9 @@ function _tryExtractTeams(title) {
 // ────────────────────────────────────────────────────────────────────────────
 
 class MatchAggregator {
-  constructor({ streamFreeProvider, timStreamsProvider, sportyHunterProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ppvProvider, ntvProvider, sportsindxProvider, cacheService, yamlProviders }) {
-    // Order matters for canonical naming/posters: richer providers first.
-    this.providers = [streamFreeProvider, streamedPkProvider, ppvProvider, watchFootyProvider, sportsindxProvider, ntvProvider, timStreamsProvider, streamSports99Provider, cdnLiveProvider, streamicProvider, sportyHunterProvider, ...(yamlProviders || [])];
+  constructor({ timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, cacheService, yamlProviders , replayzoneProvider}) {
+    this.providers = [timStreamsProvider, watchFootyProvider, cdnLiveProvider, streamSports99Provider, streamicProvider, streamedPkProvider, ...(yamlProviders || []), replayzoneProvider];
     this.cacheService = cacheService;
-    this.lastReport = { at: 0, durationMs: 0, total: 0, providers: [] };
-  }
-
-  /** Last sync summary for /api/status and the dashboard. */
-  getReport() {
-    return this.lastReport;
   }
 
   /**
@@ -135,7 +153,7 @@ class MatchAggregator {
     return {
       id,
       category: e && e.category ? String(e.category) : '',
-      date: Number(e && e.date) || 0,
+      date: _parseEventDate(e && e.date),
       teams: _tryExtractTeams(title),
       tokens: new Set(_tokenize(_compoundify(_stripNoise(title)))),
       norm: _compoundify(_stripNoise(title)).replace(/\s+/g, ' ').trim(),
@@ -260,37 +278,28 @@ class MatchAggregator {
     // Providers swallow their own errors and return []. A non-empty result is the
     // only reliable success signal; it keeps a total upstream outage from wiping the cache.
     let anyProviderSucceeded = false;
-    const startedAt = Date.now();
-    const report = [];
-
-    const runProvider = async (p) => {
-      const t0 = Date.now();
-      const name = p && p.name ? p.name : 'unknown';
-      try {
-        const providerMatches = await p.getMatches();
-        const count = Array.isArray(providerMatches) ? providerMatches.length : 0;
-        report.push({ name, ok: count > 0, count, ms: Date.now() - t0 });
-        return providerMatches;
-      } catch (err) {
-        console.error(`[MatchAggregator] ${name} failed:`, err.message);
-        report.push({ name, ok: false, count: 0, ms: Date.now() - t0, error: err.message });
-        return [];
-      }
-    };
 
     if (process.env.LOW_MEMORY_MODE === 'true') {
-      // Memory-safe sequential fetching
+      // Memory-safe sequential fetching (Alwaysdata)
       for (const p of this.providers) {
-        const providerMatches = await runProvider(p);
-        if (Array.isArray(providerMatches) && providerMatches.length > 0) anyProviderSucceeded = true;
-        processProviderMatches(providerMatches);
+        try {
+          const providerMatches = await p.getMatches();
+          if (Array.isArray(providerMatches) && providerMatches.length > 0) anyProviderSucceeded = true;
+          processProviderMatches(providerMatches);
+        } catch (err) {
+          console.error(`[MatchAggregator] Provider fetch failed:`, err.message);
+        }
       }
     } else {
       // Fast parallel fetching (Render / Local)
-      const results = await Promise.all(this.providers.map(p => runProvider(p)));
-      results.forEach((providerMatches) => {
-        if (Array.isArray(providerMatches) && providerMatches.length > 0) anyProviderSucceeded = true;
-        processProviderMatches(providerMatches);
+      const results = await Promise.allSettled(this.providers.map(p => p.getMatches()));
+      results.forEach((promiseResult, index) => {
+        if (promiseResult.status === 'fulfilled') {
+          if (Array.isArray(promiseResult.value) && promiseResult.value.length > 0) anyProviderSucceeded = true;
+          processProviderMatches(promiseResult.value);
+        } else {
+          console.error(`[MatchAggregator] Provider ${index} failed:`, promiseResult.reason);
+        }
       });
     }
 
@@ -334,15 +343,17 @@ class MatchAggregator {
       }
       if (kickoff === 0) return true; // Keep if we don't know the time
 
-      // Keep matches up to 24 hours after kickoff, except TimStreams which we keep for 48 hours (VODs)
-      const isTimStreams = match.sources && match.sources.some(s => s.source === 'timstreams');
-      const expiryWindowMs = isTimStreams ? (48 * 3600 * 1000) : (24 * 3600 * 1000);
-      return now <= kickoff + expiryWindowMs;
+      // Keep matches up to 24 hours after kickoff. ReplayZone entries are
+      // archive sessions rather than fixtures, so they get an explicit, bounded
+      // retention window instead of an open-ended exemption.
+      const expiryWindowMs = 24 * 3600 * 1000;
+      const replayExpiryWindowMs = REPLAY_RETENTION_DAYS * 24 * 3600 * 1000;
+      const isReplayZone = match.sources && match.sources.some(s => s.source === 'replayzone');
+      const windowMs = isReplayZone ? replayExpiryWindowMs : expiryWindowMs;
+      return now <= kickoff + windowMs;
     });
 
-    const durationMs = Date.now() - startedAt;
-    console.log(`[MatchAggregator] Sync complete in ${durationMs}ms. Merged ${activeMatches.length} active events from ${report.filter(r => r.ok).length}/${report.length} providers.`);
-    this.lastReport = { at: Date.now(), durationMs, total: activeMatches.length, providers: report };
+    console.log(`[MatchAggregator] Sync complete. Merged ${activeMatches.length} active events.`);
     if (anyProviderSucceeded) {
       this.cacheService.setMatches(activeMatches);
       return activeMatches;

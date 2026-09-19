@@ -79,21 +79,15 @@ class EmbedIndiaProvider extends BaseProvider {
     try {
       if (!embedUrl.includes('embedindia')) return null;
       
-      // Channel id is everything after /embed/ or /embed-noads/ (query stripped).
-      // PPV-style ids contain slashes ("cfb/2026-09-06/wsu-wash"), legacy ids do not.
-      const match = embedUrl.match(/\/embed(?:-noads)?\/(?:admin\/)?([^?#]+)/);
+      const match = embedUrl.match(/embed(?:-noads)?\/(?:admin\/)?([^\/?]+)/);
       if (!match) return null;
-      const channelId = match[1].replace(/\/+$/, '');
+      const channelId = match[1];
 
       const scriptPath = path.join(__dirname, 'run_gasm_india.js');
       const origin = new URL(embedUrl).origin;
-      // argv[5] = origin of the embed host, argv[6] = the full embed URL. The
-      // runner derives the /fetch endpoint from argv[6], so it must be the
-      // embedindia URL itself, never the third-party referer page.
-      const cleanEmbedUrl = embedUrl.split('?')[0];
 
       const stdout = await new Promise((resolve) => {
-        execFile('node', [scriptPath, channelId, 'EMPTY', 'EMPTY', origin, cleanEmbedUrl], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+        execFile('node', [scriptPath, channelId, 'EMPTY', 'EMPTY', origin, referer], { timeout: 15000 }, (err, stdout, stderr) => {
           resolve(stdout + '\n' + stderr);
         });
       });

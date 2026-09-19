@@ -2,14 +2,7 @@ const cron = require('node-cron');
 
 // Catalog stale-while-revalidate window: once the cache is older than this,
 // the next catalog/meta request triggers a background re-sync (see ensureFresh).
-const REVALIDATE_AFTER_MS = parseInt(process.env.CATALOG_REVALIDATE_MS, 10) || 3 * 60 * 1000;
-// Hard floor: a full re-sync at least this often even with zero traffic.
-const SYNC_CRON = process.env.CATALOG_SYNC_CRON || '*/10 * * * *';
-// Manual refresh (/api/refresh) is rate limited to protect upstreams.
-const FORCE_MIN_INTERVAL_MS = 45 * 1000;
-// Prewarm cadence for live matches (stream tokens live ~4 min in the cache).
-const PREWARM_CRON = process.env.PREWARM_CRON || '*/3 * * * *';
-const PREWARM_MAX = parseInt(process.env.PREWARM_MAX, 10) || 8;
+const REVALIDATE_AFTER_MS = parseInt(process.env.CATALOG_REVALIDATE_MS, 10) || 10 * 60 * 1000;
 
 class CronService {
   constructor({ matchAggregator, streamResolveCache, cacheService }) {
@@ -17,58 +10,19 @@ class CronService {
     this.streamResolveCache = streamResolveCache;
     this.cacheService = cacheService;
     this.syncing = false;
-    this.currentSync = null;
-    this.lastSyncAt = 0;
-    this.lastForceAt = 0;
-    this.syncCount = 0;
-    this.startedAt = Date.now();
   }
 
   async runSync() {
-    if (this.syncing) return this.currentSync;
+    if (this.syncing) return;
     this.syncing = true;
-    this.currentSync = (async () => {
-      try {
-        const activeMatches = await this.matchAggregator.syncMatches();
-        if (activeMatches !== null) {
-          this.pruneStreamCache(activeMatches);
-          this.lastSyncAt = Date.now();
-          this.syncCount++;
-        }
-      } finally {
-        this.syncing = false;
-        this.currentSync = null;
+    try {
+      const activeMatches = await this.matchAggregator.syncMatches();
+      if (activeMatches !== null) {
+        this.pruneStreamCache(activeMatches);
       }
-    })();
-    return this.currentSync;
-  }
-
-  /**
-   * Manual refresh from the dashboard / API. Rate limited; awaits the sync so
-   * the caller can render fresh data right away.
-   */
-  async forceSync() {
-    const now = Date.now();
-    if (this.syncing) { await this.currentSync; return { started: false, reason: 'already-syncing' }; }
-    const since = now - this.lastForceAt;
-    if (since < FORCE_MIN_INTERVAL_MS) return { started: false, reason: 'rate-limited', waitMs: FORCE_MIN_INTERVAL_MS - since };
-    this.lastForceAt = now;
-    await this.runSync();
-    return { started: true };
-  }
-
-  status() {
-    const report = this.matchAggregator && typeof this.matchAggregator.getReport === 'function' ? this.matchAggregator.getReport() : null;
-    return {
-      syncing: this.syncing,
-      lastSyncAt: this.lastSyncAt || null,
-      ageMs: this.lastSyncAt ? Date.now() - this.lastSyncAt : null,
-      syncCount: this.syncCount,
-      uptimeMs: Date.now() - this.startedAt,
-      revalidateAfterMs: REVALIDATE_AFTER_MS,
-      syncCron: SYNC_CRON,
-      report
-    };
+    } finally {
+      this.syncing = false;
+    }
   }
 
   // Catalog stale-while-revalidate: serve the cached list immediately and
@@ -88,8 +42,8 @@ class CronService {
   start() {
     console.log('[CronService] Starting background jobs...');
     
-    // Full re-sync on a fixed cadence (default every 10 minutes)
-    cron.schedule(SYNC_CRON, async () => {
+    // Fetch and cache matches every 4 hours
+    cron.schedule('0 */4 * * *', async () => {
       console.log('[CronService] Running match sync job...');
       try {
         await this.runSync();
@@ -98,17 +52,22 @@ class CronService {
       }
     });
 
-    // Prewarm live matches so the stream picker is instant. Set PREWARM_LIVE=false
-    // on tiny/home hosts to keep the network quiet.
-    if (process.env.PREWARM_LIVE !== 'false') {
-      cron.schedule(PREWARM_CRON, async () => {
-        try {
-          await this.prewarmPopular();
-        } catch (err) {
-          console.error('[CronService] Prewarm job failed:', err.message);
-        }
-      });
-    }
+    // Prewarm LIVE matches only, so a click is near-instant.
+    //
+    // Deliberately narrow to protect the upstreams (this was previously disabled
+    // for exactly that reason):
+    //   - only matches that are genuinely LIVE right now (isMatchLive), which
+    //     excludes replays, upcoming fixtures and 24/7 network channels;
+    //   - capped at PREWARM_MAX matches per tick;
+    //   - this tick also skips any match whose sources are already cached, so a
+    //     warm instance does no work at all.
+    cron.schedule('*/3 * * * *', async () => {
+      try {
+        await this.prewarmPopular();
+      } catch (err) {
+        console.error('[CronService] Prewarm job failed:', err.message);
+      }
+    });
 
     // Run first sync immediately on boot
     const externalUrl = process.env.RENDER_EXTERNAL_URL;
@@ -145,21 +104,55 @@ class CronService {
     } catch (_) {}
   }
 
-  /** Prewarm popular live matches so hot streams are "already running" when clicked. */
+  /**
+   * Prewarm LIVE matches so hot streams are already resolving when clicked.
+   *
+   * Scope is deliberately narrow:
+   *   - LIVE only (isMatchLive) - no replays, no upcoming, no 24/7 networks;
+   *   - hard cap per tick;
+   *   - sources already in the resolve cache are skipped, so a warm instance
+   *     performs no upstream requests at all.
+   */
   async prewarmPopular() {
     try {
-      // Lazy requires avoid a require cycle (catalog -> streams -> container -> this).
-      const { isMatchLive } = require('../catalog');
+      const PREWARM_MAX = Number(process.env.PREWARM_MAX_MATCHES || 12);
+      const { isMatchLive, isReplayMatch } = require('../catalog');
       const { prewarmMatch } = require('../streams');
+      const resolveCache = this.streamResolveCache;
       const matches = this.cacheService ? this.cacheService.getMatches() : [];
-      const live = matches.filter(m => isMatchLive(m) && m.category !== 'networks');
-      // Popular first, then the rest; cap to keep upstream load and RAM bounded.
-      live.sort((a, b) => (b.popular === '1' ? 1 : 0) - (a.popular === '1' ? 1 : 0));
-      const hot = live.slice(0, PREWARM_MAX);
-      if (hot.length === 0) return;
-      console.log(`[CronService] Prewarming ${hot.length} live matches...`);
-      for (const m of hot) {
-        await prewarmMatch(m, null, 4);
+
+      const live = matches.filter((m) => {
+        if (!m || !m.sources || m.sources.length === 0) return false;
+        if (m.category === 'networks') return false;      // 24/7 channels
+        if (isReplayMatch(m)) return false;                // replays
+        return isMatchLive(m);                             // genuinely live
+      });
+      if (live.length === 0) return;
+
+      // Only among LIVE matches: prefer popular, then most viewers/recent kickoff.
+      live.sort((a, b) => {
+        const ap = a.popular === '1' ? 1 : 0;
+        const bp = b.popular === '1' ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        return (Number(b.date) || 0) - (Number(a.date) || 0);
+      });
+
+      // Skip matches whose sources are already cached (nothing to do).
+      const todo = [];
+      for (const m of live) {
+        if (todo.length >= PREWARM_MAX) break;
+        let warm = false;
+        if (resolveCache) {
+          warm = m.sources.some((s) => resolveCache.get(`${s.source}:${m.id}:${s.id}`));
+        }
+        if (!warm) todo.push(m);
+      }
+      if (todo.length === 0) return;
+
+      console.log(`[CronService] Prewarming ${todo.length} live match(es) (of ${live.length} live)`);
+      // Sequential: never bursts upstream. Low priority, so slow is fine.
+      for (const m of todo) {
+        await prewarmMatch(m, null, Number.MAX_SAFE_INTEGER).catch(() => {});
       }
     } catch (err) {
       console.error('[CronService] Prewarm failed:', err.message);

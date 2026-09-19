@@ -12,7 +12,6 @@ class StreamSports99Provider extends BaseProvider {
   constructor(opts) {
     super(opts);
     this.name = 'StreamSports99';
-    this.embedResolver = opts.embedResolver;
     // VIP Endpoint to get access to all categories
     this.apiUrl = 'https://api.cdnlivetv.is/api/v1/events/sports/?user=streamsports99&plan=vip';
     
@@ -135,12 +134,16 @@ class StreamSports99Provider extends BaseProvider {
       }
 
       if (item && item.channels && Array.isArray(item.channels)) {
+
+
         for (const [idx, ch] of item.channels.entries()) {
           if (ch.url) {
 
+            // --- INTERNAL FALLBACK ---
+            console.log("[DEBUG SS99] ENTERING EXTRACTION TRY BLOCK FOR", ch.url);
             try {
-              const { request } = require('undici');
-              const playerRes = await request(ch.url, {
+              const { safeFetch } = require('../impitClient');
+              const playerRes = await safeFetch(ch.url, {
                 headersTimeout: 15000, bodyTimeout: 15000,
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -149,13 +152,17 @@ class StreamSports99Provider extends BaseProvider {
                 signal: AbortSignal.timeout(10000)
               });
               
-              if (playerRes.ok || playerRes.statusCode === 200) {
-                const html = await playerRes.body.text();
+              console.log(`[DEBUG SS99] playerRes.ok: ${playerRes.ok}, status: ${playerRes.status}`);
+              
+              if (playerRes.ok || playerRes.status === 200) {
+                const html = await playerRes.text();
                 const decoderMatch = html.match(/function\s+([a-zA-Z0-9_]+)\s*\([a-zA-Z0-9_]+\)\s*\{.+?atob/);
+                console.log(`[DEBUG SS99] HTML length: ${html.length}, decoderMatch: ${!!decoderMatch}`);
                 if (decoderMatch) {
                   const decoderName = decoderMatch[1];
                   const concatRegex = new RegExp(`var\\s+([a-zA-Z0-9_]+)\\s*=\\s*${decoderName}\\([^;]+;`);
                   const concatMatch = html.match(concatRegex);
+                  console.log(`[DEBUG SS99] decoderName: ${decoderName}, concatMatch: ${!!concatMatch}`);
                   if (concatMatch) {
                     const varRegex = new RegExp(`${decoderName}\\(([a-zA-Z0-9_]+)\\)`, 'g');
                     let match;
@@ -173,6 +180,7 @@ class StreamSports99Provider extends BaseProvider {
                         try { m3u8Url += Buffer.from(b64, 'base64').toString('utf8'); } catch(e) {}
                       }
                     }
+                    console.log(`[DEBUG SS99] vars: ${vars.length}, m3u8Url length: ${m3u8Url.length}`);
                     
                     if (m3u8Url) {
                       streams.push(new StreamEntity({
@@ -200,27 +208,11 @@ class StreamSports99Provider extends BaseProvider {
               console.warn(`[${this.name}] Failed to extract m3u8 for ${ch.url}:`, e.message);
             }
             
-            // Generic extraction (iframes / JSON config) before giving up on a direct stream
-            if (this.embedResolver) {
-              const EmbedResolver = require('../services/EmbedResolver');
-              const resolved = await this.embedResolver.resolve(ch.url, { referer: 'https://streamsports99.fun/', title: matchTitle }).catch(() => null);
-              if (resolved) {
-                streams.push(new StreamEntity({
-                  name: `StreamSports99`,
-                  title: ch.channel_name || `StreamSports99 Stream ${idx + 1}`,
-                  url: EmbedResolver.proxyUrl(resolved),
-                  behaviorHints: { notWebReady: true },
-                  resolution: 'HD'
-                }));
-                continue;
-              }
-            }
-
-            // Fallback to the web player page
+            // Fallback to web player link if extraction fails
             streams.push(new StreamEntity({
               name: `StreamSports99`,
-              title: ch.channel_name || `StreamSports99 Stream ${idx + 1}`,
-              externalUrl: `/watch?url=${encodeURIComponent(ch.url)}&title=${encodeURIComponent(matchTitle || 'StreamSports99')}`,
+              title: ch.channel_name || `VIP Stream ${idx + 1} (Web Player)`,
+              externalUrl: ch.url,
               resolution: 'HD'
             }));
           }

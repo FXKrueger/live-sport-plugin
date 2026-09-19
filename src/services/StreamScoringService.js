@@ -29,8 +29,6 @@ class StreamScoringService {
     const reliableSources = ['admin', 'echo', 'delta', 'golf'];
     if (reliableSources.includes(sourceName)) {
       score += 15;
-    } else if (sourceName === 'streamfree') {
-      score += 10;
     } else if (sourceName === 'timstreams') {
       score += 5;
     }

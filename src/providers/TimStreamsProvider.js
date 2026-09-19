@@ -1,4 +1,4 @@
-const { request } = require('undici');
+const { safeFetch } = require('../impitClient');
 const BaseProvider = require('./BaseProvider');
 const MatchEntity = require('../domain/MatchEntity');
 const { parseTimezone } = require('../timezone');
@@ -8,7 +8,7 @@ class TimStreamsProvider extends BaseProvider {
   constructor(opts) {
     super(opts);
     this.name = 'TimStreams';
-    this.apiUrl = 'https://timstreams.st/api/live-upcoming';
+    this.apiUrl = 'https://timst.cfd/api/live-upcoming';
     
     this.fetchData = this.circuitBreaker.wrap(`${this.name}_fetch`, async () => {
       const res = await this.proxyFetch(this.apiUrl, { signal: AbortSignal.timeout(15000) });
@@ -47,10 +47,14 @@ class TimStreamsProvider extends BaseProvider {
           const parsed = parseTimezone(s.time, 'America/New_York');
           if (parsed) dateMs = parsed;
         }
-        
+
+        // TimStreams exposes a time but no explicit kickoff-window guarantee, so we
+        // KEEP everything. The previous code silently dropped any match whose time
+        // fell outside a 4 h live window (and every match whose date failed to
+        // parse, since dateMs then defaulted to now for all of them). Losing
+        // events is far worse than listing a few extra ones.
         const now = Date.now();
-        const FOUR_HOURS = 4 * 60 * 60 * 1000;
-        const isLive = dateMs <= now && dateMs > now - FOUR_HOURS;
+        const isLive = dateMs <= now && dateMs > now - (12 * 60 * 60 * 1000);
 
         const sources = (s.streams || [])
           .filter(st => !st.vip)
@@ -130,7 +134,7 @@ class TimStreamsProvider extends BaseProvider {
       const res = await this.proxyFetch(embedUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-          'Referer': 'https://timstreams.st/'
+          'Referer': 'https://timst.cfd/'
         },
         signal: AbortSignal.timeout(10000)
       });

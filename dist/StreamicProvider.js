@@ -6,7 +6,6 @@ class StreamicProvider extends BaseProvider {
   constructor(opts) {
     super(opts);
     this.name = 'Streamic';
-    this.embedResolver = opts.embedResolver;
     this.apiUrl = 'https://streamic.st/api/J.php';
     this.fetchData = this.circuitBreaker.wrap(`${this.name}_fetch`, async () => {
       const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' };
@@ -83,37 +82,29 @@ class StreamicProvider extends BaseProvider {
   async resolveStream(sourceId, matchCategory, matchTitle, extraData) {
     try {
       if (!extraData || !extraData._embeds) return [];
-
-      const candidates = [];
+      
+      const streams = [];
       extraData._embeds.forEach(embedGroup => {
         const lang = embedGroup.language || 'Unknown';
         if (Array.isArray(embedGroup.embeds)) {
-          embedGroup.embeds.forEach((e) => {
-            if (!e.embed) return;
-            let streamUrl = e.embed;
-            // Some API results return half a URL like `https://streami.fit/live/?channel_id=`
-            if (streamUrl.endsWith('=')) streamUrl += sourceId;
-            candidates.push({ url: streamUrl, title: `Streamic (${lang}${e.label ? ' ' + e.label : ''})` });
+          embedGroup.embeds.forEach((e, idx) => {
+            if (e.embed) {
+              let streamUrl = e.embed;
+              
+              // Some API results return half a URL like `https://streami.fit/live/?channel_id=`
+              if (streamUrl.endsWith('=')) {
+                streamUrl += sourceId;
+              }
+              
+              streams.push(new StreamEntity({
+                name: 'Streamic',
+                title: `${lang} ${e.label ? '(' + e.label + ')' : ''}`,
+                externalUrl: streamUrl
+              }));
+            }
           });
         }
       });
-
-      const streams = [];
-      const EmbedResolver = require('../services/EmbedResolver');
-      const webFallback = (c) => new StreamEntity({ name: 'Streamic', title: c.title, externalUrl: `/watch?url=${encodeURIComponent(c.url)}&title=${encodeURIComponent(matchTitle || 'Live Event')}` });
-
-      // Try to turn the first few embeds into direct HLS; keep the page as fallback.
-      await Promise.all(candidates.slice(0, 4).map(async (c) => {
-        if (this.embedResolver) {
-          const resolved = await this.embedResolver.resolve(c.url, { referer: 'https://streamic.st/', title: matchTitle }).catch(() => null);
-          if (resolved) {
-            streams.push(new StreamEntity({ name: 'Streamic', title: c.title, url: EmbedResolver.proxyUrl(resolved), behaviorHints: { notWebReady: true }, resolution: 'HD' }));
-            return;
-          }
-        }
-        streams.push(webFallback(c));
-      }));
-      for (const c of candidates.slice(4)) streams.push(webFallback(c));
       return streams;
     } catch (error) {
       console.error(`[${this.name}] resolveStream failed for ${sourceId}:`, error.message);

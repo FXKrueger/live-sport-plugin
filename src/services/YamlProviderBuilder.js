@@ -12,7 +12,6 @@ class GenericYamlProvider extends BaseProvider {
     super(opts);
     this.name = config.name;
     this.config = config;
-    this.embedResolver = opts.embedResolver || null;
 
     this.fetchData = this.circuitBreaker.wrap(`${this.name}_fetch`, async () => {
       const res_req = await request(this.config.baseUrl, { headersTimeout: 10000, bodyTimeout: 10000 });
@@ -64,15 +63,10 @@ class GenericYamlProvider extends BaseProvider {
   }
 
   async resolveStream(sourceId, matchCategory, matchTitle) {
+    // For simple YAML scrapers, we just return the link as an external player
+    // Building a generic m3u8 extractor in YAML is too complex for this phase,
+    // so we fallback to Nuvio Web Player.
     const watchUrl = sourceId.startsWith('http') ? sourceId : `${this.config.baseUrl.replace(/\/$/, '')}${sourceId.startsWith('/') ? '' : '/'}${sourceId}`;
-    // Generic extraction first (plain m3u8 / JSON config / atob / iframes), browser page as fallback.
-    if (this.embedResolver) {
-      const EmbedResolver = require('./EmbedResolver');
-      const resolved = await this.embedResolver.resolve(watchUrl, { referer: this.config.baseUrl, title: matchTitle }).catch(() => null);
-      if (resolved) {
-        return [new StreamEntity({ name: this.name, title: this.name, url: EmbedResolver.proxyUrl(resolved), behaviorHints: { notWebReady: true }, resolution: 'HD' })];
-      }
-    }
     return [new StreamEntity({
       name: 'Nuvio Web Player',
       title: `${this.name} (${matchTitle})`,
@@ -99,9 +93,7 @@ class YamlProviderBuilder {
         const config = yaml.load(fileContents);
         
         if (config && config.name && config.baseUrl && config.selectors && typeof config.selectors.matches === 'string' && typeof config.selectors.title === 'string' && typeof config.selectors.link === 'string') {
-          let embedResolver = null;
-          try { embedResolver = container.resolve('embedResolver'); } catch (_) {}
-          const providerInstance = new GenericYamlProvider({ circuitBreaker, embedResolver }, config);
+          const providerInstance = new GenericYamlProvider({ circuitBreaker }, config);
           generatedProviders.push(providerInstance);
           console.log(`[YamlProviderBuilder] Successfully loaded YAML provider: ${config.name}`);
         }

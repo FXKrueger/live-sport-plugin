@@ -3,7 +3,6 @@ node_modules/
 *.log
 .DS_Store
 scratch/
-dist/*.node
-dist_wasm/
 cloudflared.exe
-nuvio-proxy-2/
+*.exe
+

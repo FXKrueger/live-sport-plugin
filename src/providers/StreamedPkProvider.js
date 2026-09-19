@@ -107,19 +107,26 @@ class StreamedPkProvider extends BaseProvider {
             });
           }
 
-          const posterUrl = item.poster ? (
-            item.poster.startsWith('//') ? `https:${item.poster}` :
-            item.poster.startsWith('http') ? item.poster :
-            item.poster.startsWith('/') ? `https://streamed.pk${item.poster}` :
-            `https://streamed.pk/${item.poster}`
-          ) : '';
+          const posterUrl = item.poster ? new URL(item.poster, 'https://streamed.pk').toString() : '';
           const homeBadge = item.teams && item.teams.home && item.teams.home.badge ? `https://streamed.pk/api/images/proxy/${item.teams.home.badge}` : '';
           const awayBadge = item.teams && item.teams.away && item.teams.away.badge ? `https://streamed.pk/api/images/proxy/${item.teams.away.badge}` : '';
+
+          let finalCategory = this.normalizeCategory(item.category);
+          if (is247Channel) {
+            const titleLower = item.title.toLowerCase();
+            const idLower = item.id.toLowerCase();
+            if (titleLower.includes('nfl') || idLower.includes('nfl')) finalCategory = 'american_football';
+            else if (titleLower.includes('cricket') || idLower.includes('cricket')) finalCategory = 'cricket';
+            else if (titleLower.includes('tennis') || idLower.includes('tennis')) finalCategory = 'tennis';
+            else if (titleLower.includes('rally') || titleLower.includes('f1') || titleLower.includes('motor')) finalCategory = 'motorsport';
+            else if (titleLower.includes('league') || titleLower.includes('rugby')) finalCategory = 'rugby';
+            else finalCategory = 'networks';
+          }
 
           matches.push(new MatchEntity({
             id: `spk_${item.id}`,
             title: item.title,
-            category: is247Channel && (item.id.includes('channel') || item.id.includes('network') || item.id.includes('tv') || Number(item.date) <= 0) ? (item.category === 'cricket' ? 'cricket' : (item.category === 'tennis' ? 'tennis' : (item.category === 'rugby' ? 'rugby' : this.normalizeCategory(item.category)))) : this.normalizeCategory(item.category),
+            category: finalCategory,
             status: status,
             date: is247Channel ? '' : String(item.date || Date.now()),
             popular: is247Channel ? '1' : (item.popular ? '1' : '0'),
@@ -149,9 +156,15 @@ class StreamedPkProvider extends BaseProvider {
         // Sort streams by viewer count (descending)
         streamList.sort((a, b) => (b.viewers || 0) - (a.viewers || 0));
 
-        // Chunk the stream list to prevent memory spiking on Render (512MB RAM limit).
-        // Executing max 3 WASM child processes at a time keeps RAM usage very safe.
-        const CHUNK_SIZE = 3;
+        // Resolve the stream variants in bounded batches.
+        //
+        // This used to be a hardcoded 3, chosen for Render's 512MB free tier when
+        // each variant spawns a WASM child process. We no longer run on Render, so
+        // that ceiling is unnecessarily conservative and serialises the resolve
+        // into several sequential rounds (12 variants = 4 rounds at 3/batch).
+        // Default is now 5, tunable via STREAMEDPK_CHUNK without a rebuild. The
+        // batch is still bounded so a machine with little RAM is not overwhelmed.
+        const CHUNK_SIZE = Math.max(1, Number(process.env.STREAMEDPK_CHUNK || 5));
         for (let i = 0; i < streamList.length; i += CHUNK_SIZE) {
           const chunk = streamList.slice(i, i + CHUNK_SIZE);
           

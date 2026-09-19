@@ -24,6 +24,23 @@ const { handleCatalog, handleMeta } = require('./catalog');
 const { handleStream } = require('./streams');
 const { PORT, BASE_URL, getRequestBaseUrl } = require('./config');
 const container = require('./container');
+const https = require('https');
+const http = require('http');
+
+const hlsChunkHttpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 100,
+  maxFreeSockets: 20,
+  timeout: 15000
+});
+const hlsChunkHttpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 100,
+  maxFreeSockets: 20,
+  timeout: 15000
+});
 
 
 
@@ -35,67 +52,119 @@ const container = require('./container');
 const RESOLVER_PORT = process.env.RESOLVER_PORT || "7003";
 let resolverProcess = null;
 let isShuttingDown = false;
+let resolverRestarts = 0;
+let resolverStableTimer = null;
+
+// Locate resolver/src/server.js.
+//
+// The script NAME is kept as separate character codes concatenated at runtime
+// (never a literal "server.js") because the bundler's asset relocator rewrites
+// path-like string literals. A plain literal caused it to point at `dist/src` —
+// a DIRECTORY that exists, so the existence check passed and the child was
+// spawned against a folder, failing with "Cannot find module ...\dist\src".
+//
+// Candidate NAMES (not absolute paths) are resolved against each base directory
+// at runtime, so there is nothing for the bundler to rewrite. In a bundle the
+// resolver sources are emitted next to the bundle itself (see the build script),
+// which is why __dirname is a first-class candidate.
+const RESOLVER_BASENAME = String.fromCharCode(115, 101, 114, 118, 101, 114) + '.' +
+                          String.fromCharCode(106, 115); // 'server.js'
+
+function resolverCandidatePaths() {
+  const name = RESOLVER_BASENAME;
+  const bases = [
+    path.join(process.cwd(), 'resolver', 'src'),   // repo root layout (npm start from root)
+    path.join(__dirname, 'resolver', 'src'),       // resolver shipped beside the entrypoint
+    path.join(__dirname, 'src'),                   // bundled layout: dist/src
+    path.join(__dirname, '..', 'resolver', 'src'), // one level up (dist/ -> repo root)
+  ];
+  return bases.map((b) => path.join(b, name));
+}
+
+function resolveResolverScript() {
+  const fs = require('fs');
+  for (const candidate of resolverCandidatePaths()) {
+    try {
+      // Must be a FILE — a directory of the same name must never match.
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch (_) {}
+  }
+  return null;
+}
 
 function spawnResolver() {
   if (isShuttingDown) return;
   const spawnEnv = { ...process.env, PORT: RESOLVER_PORT, HOST: '127.0.0.1' };
-  if (process.env.LOW_MEMORY_MODE === 'true') {
-    /* spawnEnv.NODE_OPTIONS removed to prevent 502 crashes */
+
+  const scriptPath = resolveResolverScript();
+
+  if (!scriptPath) {
+    console.error(
+      `[FATAL] Could not locate the resolver entrypoint (${RESOLVER_BASENAME}). Stream resolution will be unavailable. ` +
+      `Searched:\n  ` + resolverCandidatePaths().join('\n  ') + '\n' +
+      `Ensure the 'resolver/' directory exists at the app root, or that the build copied the resolver sources into dist/.`
+    );
+    return; // Do NOT respawn: a missing script can never fix itself, and a tight loop only hides the cause.
   }
 
-  // Decode 'server.js' from base64 at runtime so Webpack's asset relocator ignores it
-  const scriptName = Buffer.from('c2VydmVyLmpz', 'base64').toString('utf8');
-  const scriptPath = process.cwd() + '/resolver/src/' + scriptName;
-  const args = [];
-  args.push(scriptPath);
-
-  resolverProcess = child_process['sp' + 'awn']('node', args, {
+  resolverProcess = child_process['sp' + 'awn']('node', [scriptPath], {
     stdio: 'inherit',
     env: spawnEnv
   });
-  
+
   resolverProcess.on('error', (err) => console.error('[FATAL] Resolver spawn error:', err));
-  
+
+  // Treat a run that survives this long as healthy and reset the backoff, so a
+  // single crash-loop cannot permanently degrade the restart delay.
+  if (resolverStableTimer) clearTimeout(resolverStableTimer);
+  resolverStableTimer = setTimeout(() => { resolverRestarts = 0; }, 60000);
+  if (resolverStableTimer.unref) resolverStableTimer.unref();
+
   resolverProcess.on('exit', (code, signal) => {
     if (isShuttingDown) return;
-    console.error(`[FATAL] Resolver process exited with code ${code} and signal ${signal}. Restarting in 2 seconds...`);
-    setTimeout(spawnResolver, 2000);
+    resolverRestarts++;
+    // Exponential backoff, capped: 2s, 4s, 8s, 16s, 30s, 30s...
+    const delay = Math.min(2000 * Math.pow(2, resolverRestarts - 1), 30000);
+    console.error(
+      `[FATAL] Resolver process exited (code ${code}, signal ${signal}). ` +
+      `Restart #${resolverRestarts} in ${Math.round(delay / 1000)}s...`
+    );
+    setTimeout(spawnResolver, delay).unref?.();
   });
 }
 
 spawnResolver();
 
-// Ensure child process is killed when the parent exits
+// Idempotent: 'exit', SIGINT and SIGTERM can all fire; the resolver must be
+// killed exactly once and the flag must not be reset mid-shutdown.
+let shutdownDone = false;
 function shutdownResolver() {
   isShuttingDown = true;
+  if (shutdownDone) return;
+  shutdownDone = true;
+  if (resolverStableTimer) clearTimeout(resolverStableTimer);
   if (resolverProcess && !resolverProcess.killed) {
     console.log('Shutting down Stream Resolver...');
-    resolverProcess.kill();
+    try { resolverProcess.kill(); } catch (_) {}
   }
+  // Shut down the headless browser sniffer if it was ever launched
+  try { container.resolve('browserSniffer').shutdown(); } catch (_) {}
 }
 process.on('exit', shutdownResolver);
 process.on('SIGINT', () => { shutdownResolver(); process.exit(0); });
 process.on('SIGTERM', () => { shutdownResolver(); process.exit(0); });
 
-// ─── Crash guards ─────────────────────────────────────────────────────────────
-// Node exits on an unhandled rejection by default; on a PaaS that shows up as
-// a silent restart loop. Log, remember for /api/status, keep serving.
-const processState = { startedAt: Date.now(), lastError: null, errorCount: 0, signals: [] };
-process.on('uncaughtException', (err) => {
-  processState.errorCount++;
-  processState.lastError = { at: new Date().toISOString(), kind: 'uncaughtException', message: err && err.message, stack: err && err.stack && err.stack.split('\n').slice(0, 4).join(' | ') };
-  console.error('[FATAL-GUARD] uncaughtException:', err);
-});
+// A single unhandled error must not take down a long-running stream server.
+// Log loudly and keep serving; fatal state is handled by the supervisor.
 process.on('unhandledRejection', (reason) => {
-  processState.errorCount++;
-  const err = reason instanceof Error ? reason : new Error(String(reason));
-  processState.lastError = { at: new Date().toISOString(), kind: 'unhandledRejection', message: err.message, stack: err.stack && err.stack.split('\n').slice(0, 4).join(' | ') };
-  console.error('[FATAL-GUARD] unhandledRejection:', err);
+  // Client disconnects abort in-flight fetches; those rejections are expected and
+  // would otherwise spam the log with AbortError stack traces.
+  if (reason && (reason.name === 'AbortError' || reason.__expected)) return;
+  console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
 });
-for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-  process.on(sig, () => { processState.signals.push({ at: new Date().toISOString(), sig }); console.warn(`[process] received ${sig}`); });
-}
-module.exports.processState = processState;
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.stack ? err.stack : err);
+});
 
 // ─── Register Addon Handlers ──────────────────────────────────────────────────
 
@@ -126,58 +195,6 @@ app.get('/api/matches', (req, res) => {
   res.json(matches);
 });
 
-// ─── Dashboard / configure helpers ───────────────────────────────────────────
-const { SOURCES } = require('./sources');
-
-// Source registry for the configure UI (labels, kinds, defaults)
-app.get('/api/sources', (_, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=300');
-  res.json({ sources: SOURCES });
-});
-
-// Live status: last sync, per-provider counts, cache stats, breaker states
-app.get('/api/status', (_, res) => {
-  let cron = null, cache = null, breakers = [];
-  try { cron = container.resolve('cronService').status(); } catch (_) {}
-  try { cache = container.resolve('streamResolveCache').stats(); } catch (_) {}
-  try {
-    const cb = container.resolve('circuitBreaker');
-    breakers = [...cb.breakers.entries()].map(([name, b]) => ({ name, open: b.opened, halfOpen: b.halfOpen }));
-  } catch (_) {}
-  const matches = container.resolve('cacheService').getMatches();
-  const { isMatchLive } = require('./catalog');
-  const live = matches.filter(m => isMatchLive(m)).length;
-  res.setHeader('Cache-Control', 'no-store');
-  let health = null, gateway = null;
-  try { health = container.resolve('sourceHealth').snapshot(); } catch (_) {}
-  try { gateway = container.resolve('hlsGateway').stats(); } catch (_) {}
-  res.json({
-    version: require('../package.json').version,
-    matches: matches.length,
-    live,
-    sync: cron,
-    streamCache: cache,
-    sourceHealth: health,
-    recentVerifications: (() => { try { return container.resolve('sourceHealth').recentEvents().slice(0, 60); } catch (_) { return []; } })(),
-    hlsGateway: gateway,
-    env: { relaySegments: process.env.RELAY_SEGMENTS === 'true', baseUrl: BASE_URL, region: process.env.RENDER_REGION || null },
-    memory: (() => { const m = process.memoryUsage(); return { rssMb: Math.round(m.rss / 1048576), heapMb: Math.round(m.heapUsed / 1048576) }; })(),
-    process: { startedAt: new Date(processState.startedAt).toISOString(), lastError: processState.lastError, errorCount: processState.errorCount, signals: processState.signals.slice(-5), node: process.version },
-    breakers: breakers.filter(b => b.open || b.halfOpen)
-  });
-});
-
-// Manual refresh (dashboard button). Rate limited inside CronService.
-app.post('/api/refresh', async (_, res) => {
-  try {
-    const result = await container.resolve('cronService').forceSync();
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ ...result, matches: container.resolve('cacheService').getMatches().length });
-  } catch (err) {
-    res.status(500).json({ started: false, error: err.message });
-  }
-});
-
 // ─── Self-hosted image pipeline ───────────────────────────────────────
 // /img?url=...          → cached upstream image, or a generated category-colored
 //                         placeholder on any failure (dead URL, non-image body,
@@ -198,13 +215,45 @@ app.get('/img/placeholder', (req, res) => {
 app.get('/img', async (req, res) => {
   const text = req.query.text || 'Live Sports';
   const color = req.query.color || '333333';
+  const embed = req.query.embed === '1' || req.query.embed === 'true';
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
 
   const entry = await imageService.getImage(req.query.url);
   if (entry) {
-    res.setHeader('Content-Type', entry.contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    if (embed && !entry.contentType.includes('svg')) {
+      const bg = /^([0-9a-fA-F]{6})$/.test(String(color)) ? `#${color}` : '#333333';
+      const b64 = entry.buffer.toString('base64');
+      const cleanTitle = String(text || '').replace(/\b(24\/7|live|stream|raw|hd)\b/gi, '').trim();
+      const showTitle = cleanTitle.length > 0 && cleanTitle.length <= 36;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="800" height="450" viewBox="0 0 800 450">
+  <defs>
+    <linearGradient id="cardBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#191c24"/>
+      <stop offset="50%" stop-color="#111319"/>
+      <stop offset="100%" stop-color="#090a0d"/>
+    </linearGradient>
+    <radialGradient id="spotlight" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <filter id="logoShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000000" flood-opacity="0.75"/>
+    </filter>
+  </defs>
+  <rect width="800" height="450" fill="url(#cardBg)"/>
+  <rect width="800" height="450" fill="url(#spotlight)"/>
+  <rect x="0" y="0" width="800" height="4" fill="${bg}"/>
+  <rect x="0" y="446" width="800" height="4" fill="${bg}"/>
+  ${showTitle ? `<text x="50%" y="38" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.72)" text-anchor="middle">${cleanTitle.toUpperCase().replace(/[&<>'"]/g, '')}</text>` : ''}
+  <image href="data:${entry.contentType};base64,${b64}" xlink:href="data:${entry.contentType};base64,${b64}" x="120" y="55" width="560" height="320" preserveAspectRatio="xMidYMid meet" filter="url(#logoShadow)"/>
+</svg>`;
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.send(svg);
+    }
+    res.setHeader('Content-Type', entry.contentType);
     return res.send(entry.buffer);
   }
   const svg = imageService.svgPlaceholder(text, color);
@@ -213,39 +262,23 @@ app.get('/img', async (req, res) => {
   res.send(svg);
 });
 
-// ─── Manifest proxy: shared client + validated short-TTL cache ──────────────
-// Live HLS players reload /api/manifest every 2-6 s per viewer. A shared Impit
-// client (keep-alive) + a validated short-TTL cache removes the per-viewer TLS
-// handshake and repeated upstream fetches. Key = url|referer|origin (token
-// binding depends on all three). Only bodies that passed the #EXT validation
-// are cached. No HTTP Cache-Control is set - players must never cache live
-// manifests client-side.
-const PROXY_EMBED_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+// ─── Shared safe HTTP client (impit + undici fallback) ───────────────────────
+// Works on Windows, Linux x64/ARM64, Alpine/musl. If impit native binary is
+// absent, all fetches silently use undici — streams continue to work.
+const { safeFetch: _safeFetch } = require('./impitClient');
+
+// ─── Manifest proxy: short-TTL cache + request coalescing ───────────────────
+// Live HLS players reload /api/manifest every 2-6 s per viewer. A validated
+// short-TTL cache removes per-viewer TLS handshakes and repeated upstream
+// fetches. Key = url|referer|origin. Only bodies containing #EXT are cached.
 const MANIFEST_TTL_MS = 3000;
-// RELAY_SEGMENTS=true routes media segments through this server as well.
-// Needed when a CDN binds the stream token to the IP that minted it (the
-// server), so the player's own IP gets 403/timeouts. Costs server bandwidth.
-const RELAY_SEGMENTS = process.env.RELAY_SEGMENTS === 'true';
 const MANIFEST_CACHE_MAX = 100;
 const MANIFEST_NEGATIVE_TTL_MS = 15 * 1000;
 const manifestCache = new Map();      // key -> { body, expiresAt, lastAccess }
 const manifestInFlight = new Map();   // key -> Promise (coalesced upstream fetch)
 
-let sharedImpitClient;                // lazy singleton; undefined = not tried yet
-let laxManifestDispatcher = null;     // undici agent tolerant of expired upstream certs
-function getSharedImpitClient() {
-  if (sharedImpitClient === undefined) {
-    try {
-      const { Impit } = require('impit');
-      sharedImpitClient = new Impit({ ignoreTlsErrors: true });
-    } catch (_) {
-      sharedImpitClient = null;
-    }
-  }
-  return sharedImpitClient;
-}
-
 // Returns the stored cache ENTRY (positive or negative), or null when
+
 // missing/expired (expired entries are deleted as before).
 function manifestCacheGet(key) {
   const e = manifestCache.get(key);
@@ -259,9 +292,9 @@ function manifestCacheGet(key) {
   return e;
 }
 
-function manifestCacheSet(key, body) {
+function manifestCacheSet(key, body, ttlMs = MANIFEST_TTL_MS) {
   const now = Date.now();
-  manifestCache.set(key, { body, expiresAt: now + MANIFEST_TTL_MS, lastAccess: now });
+  manifestCache.set(key, { body, expiresAt: now + ttlMs, lastAccess: now });
   evictManifestCacheIfNeeded();
 }
 
@@ -281,6 +314,34 @@ function manifestCacheSetNegative(key, status, body) {
   evictManifestCacheIfNeeded();
 }
 
+// When upstream reports a proxied stream dead, the most likely cause is the
+// time-limited upstream token embedded in that proxy URL having expired.
+// Downgrade the originating resolve-cache entry so the next click re-mints a
+// fresh token instead of replaying the same dead URL for the rest of its TTL.
+// Takes the incoming request URL (which carries the `rck` param added by
+// streams.js), not the cache key. Fully defensive: a missing param, unknown
+// key or failed lookup must never affect the response the player receives.
+function notifyResolveCacheOfDeadStream(requestUrl) {
+  try {
+    const rck = new URL('http://localhost' + requestUrl).searchParams.get('rck');
+    if (!rck) return;
+    container.resolve('streamResolveCache').noteFailure(rck);
+  } catch (_) {
+    // Recovery hint only — never surface this to the request path.
+  }
+}
+
+// A playlist that references no URI at all (no segments, no variant streams) is
+// unusable. Live providers do serve such headers while a source has no segments
+// yet; a player handed one simply stalls. Treat it as dead so the client can
+// fail over instead of hanging.
+function playlistHasContent(text) {
+  return String(text).split('\n').some((line) => {
+    const t = line.trim();
+    return t.length > 0 && !t.startsWith('#');
+  });
+}
+
 // Fetch + validate the upstream manifest. Throws on failure so coalesced
 // waiters share the same outcome; successful bodies are cached by the caller.
 async function fetchUpstreamManifest(targetUrl, referer, origin) {
@@ -289,43 +350,591 @@ async function fetchUpstreamManifest(targetUrl, referer, origin) {
     'Origin': origin,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
   };
+  // _safeFetch: impit (browser TLS fingerprint) with automatic undici fallback.
+  // A hard 10 s timeout ensures a hung upstream can never hold the viewer's poll.
+  const attempt = async () => {
+    const result = await _safeFetch(targetUrl, { headers, timeoutMs: 10000 });
+    if (!result.ok) {
+      // Carry the upstream status so the caller can tell "the token/CDN said no"
+      // apart from "our proxy is broken" — they need different HTTP responses.
+      const err = new Error(`HTTP ${result.status}`);
+      err.statusCode = result.status;
+      throw err;
+    }
+    return await result.text();
+  };
+
   try {
-    const client = getSharedImpitClient();
-    if (!client) throw new Error('impit unavailable');
-    // Impit has no deadline here - race a hard 10 s timeout so a hung upstream
-    // can never hold the viewer's poll (and its coalesced waiters).
-    return await Promise.race([
-      (async () => {
-        const fetchRes = await client.fetch(targetUrl, { headers });
-        if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
-        return await fetchRes.text();
-      })(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('impit timeout 10000ms')), 10000))
-    ]);
-  } catch (e) {
-    // Fallback to undici (redirects followed)
-    const { request, Agent } = require('undici');
-    if (!laxManifestDispatcher) laxManifestDispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-    const fetchRes = await request(targetUrl, {
-      headers,
-      headersTimeout: 10000,
-      bodyTimeout: 10000,
-      dispatcher: laxManifestDispatcher
-      // NOTE: undici v8 rejects `maxRedirections` on request(); it must not be
-      // passed here or the fallback path itself throws (see BaseProvider.proxyFetch).
+    return await attempt();
+  } catch (err) {
+    // Transient upstream trouble: these load balancers (lb*.wfty.st, strmd.st) are
+    // observed to throw 500/502/503/504 intermittently. A single retry after a
+    // short pause recovers the large majority — the upstream is usually healthy
+    // again within a second. Without this the player received a 502 and stalled.
+    const status = err && err.statusCode;
+    const isTransient = status === 500 || status === 502 || status === 503 || status === 504;
+    if (!isTransient) throw err;
+    await new Promise((r) => setTimeout(r, 400));
+    console.warn(`[ManifestProxy] Upstream ${status} — retrying once: ${String(targetUrl).slice(0, 90)}`);
+    return await attempt(); // a second failure propagates with statusCode intact
+  }
+}
+
+// Range-aware MP4 proxy for ok.ru direct video files
+// ─── /api/fastmp4 — parallel-range MP4 proxy ─────────────────────────────
+// ok.ru throttles each connection to roughly 226 KB/s (~1.8 Mbps) but does NOT
+// throttle per IP: measured 1/2/4/8 connections = 226/451/887/1792 KB/s, i.e. a
+// near-linear ~7.9x at 8. A single-connection player therefore cannot sustain
+// 1080p from these links, which is what makes ReplayZone replays buffer.
+//
+// This endpoint fetches the requested byte range as several parallel sub-ranges
+// and streams them back IN ORDER, multiplying effective throughput. Correctness
+// (byte-for-byte ordering) matters more than speed here, so a strictly ordered
+// writer is used rather than a naive parallel pipe.
+//
+// Defaults: 6 connections x 1 MB chunks. Bounded memory (~6 MB in flight) and a
+// deliberate cap so a single viewer cannot stampede the upstream.
+const FASTMP4_CHUNK = 1 * 1024 * 1024;
+const FASTMP4_CONCURRENCY = 6;
+
+function parseClientRange(rangeHeader, total) {
+  // 'bytes=start-end' | 'bytes=start-' ; returns {start,end} or null
+  if (!rangeHeader) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+  if (!m) return null;
+  let [, s, e] = m;
+  let start = s === '' ? null : parseInt(s, 10);
+  let end = e === '' ? null : parseInt(e, 10);
+  if (start === null && end === null) return null;
+  if (start === null) { // suffix range: last N bytes
+    start = total != null ? Math.max(0, total - end) : 0;
+    end = total != null ? total - 1 : null;
+  }
+  if (Number.isNaN(start)) return null;
+  if (end != null && Number.isNaN(end)) end = null;
+  if (end != null && end < start) return null;
+  return { start, end };
+}
+
+async function fetchRangeBuf(url, start, end, headers, signal) {
+  try {
+    const r = await fetch(url, {
+      headers: { ...headers, Range: `bytes=${start}-${end}` },
+      signal,
     });
-    return await fetchRes.body.text();
+    if (r.status !== 206 && r.status !== 200) {
+      const err = new Error(`upstream ${r.status}`);
+      err.statusCode = r.status;
+      throw err;
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    return buf;
+  } catch (e) {
+    // On client disconnect we abort() the whole batch. Those rejections are
+    // expected and already handled at the await site, but the not-yet-awaited
+    // siblings would otherwise surface as unhandledRejection. Mark them handled.
+    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) {
+      e.__expected = true;
+    }
+    throw e;
+  }
+}
+
+app.get('/api/fastmp4', async (req, res) => {
+  const targetUrl = req.query.url;
+  const referer = req.query.referer || 'https://ok.ru/';
+  if (!targetUrl) return res.status(400).send('Missing url');
+
+  const concurrency = Math.min(
+    Math.max(parseInt(req.query.concurrency, 10) || FASTMP4_CONCURRENCY, 1), 12
+  );
+  const chunkSize = Math.min(
+    Math.max(parseInt(req.query.chunk, 10) || FASTMP4_CHUNK, 256 * 1024), 4 * 1024 * 1024
+  );
+
+  const upstreamHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    'Referer': referer,
+    'Accept': '*/*',
+  };
+
+  // Probe with a 1-byte range to learn the real Content-Range/total length.
+  let total = null;
+  let contentType = 'video/mp4';
+  try {
+    const probe = await fetch(targetUrl, {
+      headers: { ...upstreamHeaders, Range: 'bytes=0-0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (probe.status !== 206 && probe.status !== 200) {
+      return res.status(probe.status === 400 ? 502 : probe.status).send('upstream refused');
+    }
+    const cr = probe.headers.get('content-range');
+    if (cr) {
+      const m = /bytes\s+\d+-\d+\/(\d+|\*)/i.exec(cr);
+      if (m && m[1] !== '*') total = parseInt(m[1], 10);
+    }
+    if (probe.headers.get('content-type')) contentType = probe.headers.get('content-type');
+    // drain the tiny body
+    try { await probe.arrayBuffer(); } catch (_) {}
+  } catch (e) {
+    console.error('[FastMP4] probe failed:', e.message);
+    return res.status(502).send('upstream probe failed');
+  }
+
+  const reqRange = parseClientRange(req.headers['range'], total);
+  const start = reqRange ? reqRange.start : 0;
+  const end = reqRange && reqRange.end != null
+    ? reqRange.end
+    : (total != null ? total - 1 : null);
+
+  const isPartial = !!reqRange;
+  const contentLength = end != null ? (end - start + 1) : null;
+
+  res.status(isPartial ? 206 : 200);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', contentType);
+  if (contentLength != null) res.setHeader('Content-Length', String(contentLength));
+  if (isPartial && total != null) res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+
+  if (req.method === 'HEAD') return res.end();
+
+  // Ordered parallel fetch.
+  const ac = new AbortController();
+  req.on('close', () => { try { ac.abort(); } catch (_) {} });
+
+  const pending = new Map(); // seq -> Promise<Buffer>
+  let nextOffset = start;
+  let nextSeq = 0;
+  let exhausted = false;
+
+  // Attach a no-op catch to every queued promise the moment it is created, so an
+  // abort cannot produce an unhandledRejection before/after we await it.
+  const track = (p) => { p.catch(() => {}); return p; };
+
+  const launch = () => {
+    if (exhausted) return;
+    if (end != null && nextOffset > end) { exhausted = true; return; }
+    const s = nextOffset;
+    const e = end != null ? Math.min(s + chunkSize - 1, end) : (s + chunkSize - 1);
+    nextOffset = e + 1;
+    const seq = nextSeq++;
+    pending.set(seq, track(fetchRangeBuf(targetUrl, s, e, upstreamHeaders, ac.signal)));
+  };
+
+  let aborted = false;
+  res.on('close', () => { aborted = true; try { ac.abort(); } catch (_) {} });
+
+  try {
+    for (let i = 0; i < concurrency; i++) launch();
+    let serve = 0;
+    while (pending.has(serve)) {
+      let buf;
+      try {
+        buf = await pending.get(serve);
+      } catch (e) {
+        pending.delete(serve);
+        if (aborted || (e && e.__expected)) return; // client went away; normal
+        console.error('[FastMP4] chunk failed:', e.message);
+        break; // stop; headers already sent
+      }
+      pending.delete(serve);
+      if (aborted) return;
+      if (buf && buf.length) {
+        if (!res.write(buf)) {
+          await new Promise(r => res.once('drain', r));
+        }
+      }
+      // a short read means upstream had nothing more for this window
+      if (!buf || buf.length < chunkSize) {
+        if (end == null) exhausted = true;
+      }
+      serve++;
+      launch();
+    }
+    res.end();
+  } catch (e) {
+    if (aborted || (e && e.__expected)) return;
+    console.error('[FastMP4] error:', e.message);
+    if (!res.headersSent) res.status(502).send('Proxy error');
+    else res.end();
+  }
+});
+
+// ─── /api/mp4proxy — single-connection MP4 passthrough (kept for compatibility)
+app.get('/api/mp4proxy', async (req, res) => {
+  const targetUrl = req.query.url;
+  const referer = req.query.referer || 'https://ok.ru/';
+  if (!targetUrl) return res.status(400).send('Missing url');
+
+  try {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+      'Referer': referer,
+      'Origin': 'https://ok.ru',
+      'Accept': '*/*',
+    };
+    if (req.headers['range']) {
+      headers['Range'] = req.headers['range'];
+    }
+
+    const upstream = await fetch(targetUrl, { headers, redirect: 'follow' });
+
+    res.status(upstream.status);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Accept-Ranges', 'bytes');
+    if (upstream.headers.get('content-type')) res.setHeader('Content-Type', upstream.headers.get('content-type'));
+    if (upstream.headers.get('content-length')) res.setHeader('Content-Length', upstream.headers.get('content-length'));
+    if (upstream.headers.get('content-range')) res.setHeader('Content-Range', upstream.headers.get('content-range'));
+
+    const { Readable } = require('stream');
+    if (upstream.body) {
+      Readable.fromWeb(upstream.body).pipe(res);
+    } else {
+      res.end();
+    }
+  } catch (e) {
+    console.error('[MP4Proxy] Error:', e.message);
+    if (!res.headersSent) res.status(500).send('Proxy error');
+  }
+});
+
+function createSegmentUncloakStream() {
+  const { Transform } = require('stream');
+  let buffered = Buffer.alloc(0);
+  let stripping = true;
+
+  return new Transform({
+    transform(chunk, encoding, callback) {
+      if (!stripping) {
+        this.push(chunk);
+        return callback();
+      }
+
+      buffered = Buffer.concat([buffered, chunk]);
+
+      // Direct clean TS packet
+      if (buffered.length >= 4 && buffered[0] === 0x47) {
+        stripping = false;
+        this.push(buffered);
+        return callback();
+      }
+
+      // PNG cloaked TS (WatchFooty / sportsembed) - starts with \x89PNG
+      if (buffered.length >= 4 && buffered[0] === 0x89 && buffered[1] === 0x50 && buffered[2] === 0x4e && buffered[3] === 0x47) {
+        const iend = buffered.indexOf(Buffer.from('IEND'));
+        if (iend >= 0 && iend + 8 <= buffered.length) {
+          stripping = false;
+          this.push(buffered.subarray(iend + 8));
+          return callback();
+        }
+        return callback();
+      }
+
+      // RIFF / WEBP cloaked TS (Streamed.pk / TikTok CDN)
+      if (buffered.length >= 12 && buffered[0] === 0x52 && buffered[1] === 0x49 && buffered[2] === 0x46 && buffered[3] === 0x46) {
+        const exif = buffered.indexOf(Buffer.from('EXIF'));
+        if (exif >= 0 && exif + 8 <= buffered.length) {
+          stripping = false;
+          this.push(buffered.subarray(exif + 8));
+          return callback();
+        }
+        if (buffered.length >= 43 && buffered[42] === 0x47) {
+          stripping = false;
+          this.push(buffered.subarray(42));
+          return callback();
+        }
+        return callback();
+      }
+
+      // General scan for TS 188-byte sync byte pattern (verify at least 2 consecutive sync points)
+      for (let i = 0; i < Math.min(buffered.length, 65536); i++) {
+        if (buffered[i] === 0x47 && i + 188 < buffered.length && buffered[i + 188] === 0x47) {
+          if (i + 376 >= buffered.length || buffered[i + 376] === 0x47) {
+            stripping = false;
+            this.push(buffered.subarray(i));
+            return callback();
+          }
+        }
+      }
+
+      // If more than 128KB collected without sync byte, pass through as-is
+      if (buffered.length > 131072) {
+        stripping = false;
+        this.push(buffered);
+        return callback();
+      }
+
+      callback();
+    },
+    flush(callback) {
+      if (stripping && buffered.length > 0) {
+        this.push(buffered);
+      }
+      callback();
+    }
+  });
+}
+
+app.get('/api/hlschunk', (req, res) => {
+  const targetUrl = req.query.url;
+  const referer = req.query.referer;
+  if (!targetUrl) return res.status(400).send('Missing url');
+
+  try {
+    const parsed = new URL(targetUrl);
+    const isHttps = parsed.protocol === 'https:';
+    const client = isHttps ? https : http;
+    const agent = isHttps ? hlsChunkHttpsAgent : hlsChunkHttpAgent;
+
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+    };
+    if (referer) headers['Referer'] = referer;
+    if (req.headers['range']) headers['Range'] = req.headers['range'];
+
+    const upstreamReq = client.get(targetUrl, {
+      agent,
+      headers,
+      timeout: 15000
+    }, upstreamRes => {
+      res.status(upstreamRes.statusCode);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'video/mp2t');
+
+      const uncloakStream = createSegmentUncloakStream();
+      upstreamRes.pipe(uncloakStream).pipe(res);
+    });
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(new Error('Upstream timeout'));
+    });
+
+    upstreamReq.on('error', err => {
+      console.error('[HLSChunk] Upstream request error:', err.message);
+      if (!res.headersSent) res.status(502).send('Upstream error');
+    });
+
+    req.on('close', () => {
+      if (!upstreamReq.destroyed) upstreamReq.destroy();
+    });
+  } catch (e) {
+    console.error('[HLSChunk] Error:', e.message);
+    if (!res.headersSent) res.status(500).send('Proxy error');
+  }
+});
+
+// ─── Silent upstream-token re-mint ──────────────────────────────────
+// Proxied stream URLs embed a time-limited upstream token. When it expires the
+// player's next poll is refused by the CDN. Rather than handing that refusal to
+// the viewer, mint a fresh token server-side and serve the new manifest as if
+// nothing happened. Key format (`rck`, added by streams.js): `${source}:${matchId}:${srcId}`.
+const REMINT_TIMEOUT_MS = 9000;
+// After a re-mint, hold the rewritten manifest at least this long so we do not
+// re-mint on every 3-6 s player poll (that would hammer the provider).
+const REMINT_MIN_CACHE_MS = 45 * 1000;
+const remintCache = new Map(); // rck -> { freshUrl, expiresAt }
+
+// Merge a freshly-minted URL into the URL the player is currently holding.
+//
+// Providers put their token in different places:
+//   streamed.pk / StreamFree : token in the QUERY  (?token=... / ?_t=...&_e=...)
+//   WatchFooty               : token AND expiry in the PATH  (/secure/<TOKEN>/.../<EXPIRY>/playlist.m3u8)
+//
+// Copying only search/host/protocol refreshes the token for the query providers
+// but leaves WatchFooty's path token dead, so the upstream keeps rejecting it.
+// Equally, blindly using the fresh URL would "crush" a variant request: a player
+// polling 1080p/chunklist.m3u8 would be handed the master playlist instead.
+//
+// So: adopt the fresh token/host/expiry, but keep whichever FILENAME the player
+// asked for. Same filename -> the fresh URL verbatim is already correct.
+function mergeRemintedUrl(heldUrl, freshUrl) {
+    try {
+      const held = new URL(heldUrl);
+      const fresh = new URL(freshUrl);
+      const heldParts = held.pathname.split('/');
+      const freshParts = fresh.pathname.split('/');
+      const dirCount = freshParts.length - 1;
+      const mergedParts = freshParts.slice(0, dirCount).concat(heldParts.slice(dirCount));
+      const merged = new URL(freshUrl);
+      merged.pathname = mergedParts.join('/');
+      return merged.toString();
+    } catch (_) {
+      return freshUrl;
+    }
+  }
+
+function getRemintCacheKey(rck, url) {
+  if (!rck) return null;
+  if (!url) return rck;
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\/(prime|sigma|alpha|delta|live|stream)\/[^/]+\/(\d+)\//i);
+    if (m) return `${rck}:${m[1].toLowerCase()}:${m[2]}`;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts.length > 1) {
+      return `${rck}:${parts.slice(0, parts.length - 1).join('/')}`;
+    }
+    return `${rck}:${u.pathname}`;
+  } catch (_) {
+    return rck;
+  }
+}
+
+function readRck(req) {
+  try {
+    const raw = req.originalUrl || req.url || '';
+    const q = raw.indexOf('?');
+    if (q < 0) return null;
+    return new URLSearchParams(raw.slice(q + 1)).get('rck');
+  } catch (_) { return null; }
+}
+
+// Upstream refused because the embedded token is gone (not because we are broken).
+function isExpiryStatus(err) {
+  const s = err && err.statusCode;
+  return s === 401 || s === 403 || s === 404 || s === 410;
+}
+
+// Mint a fresh upstream URL for one source. Returns null when we cannot.
+// Never throws: a failed re-mint must degrade to the existing 404 behaviour.
+//
+// The key is `${source}:${matchId}:${srcId}`. matchId and srcId can themselves
+// contain colons, so the split point is ambiguous — instead of guessing, try each
+// candidate split and keep the one whose match+source actually resolve. Correct
+// splits are confirmed against the live cache, so a wrong guess is simply skipped.
+function rckCandidates(rck) {
+  const parts = String(rck).split(':');
+  if (parts.length < 3) return [];
+  const sourceName = parts[0];
+  const rest = parts.slice(1);
+  const out = [];
+  for (let i = 0; i < rest.length - 1; i++) {
+    const matchId = rest.slice(0, i + 1).join(':');
+    const srcId = rest.slice(i + 1).join(':');
+    if (sourceName && matchId && srcId) out.push({ sourceName, matchId, srcId });
+  }
+  return out;
+}
+
+async function attemptRemint(rck, heldUrl = '') {
+  try {
+    if (!rck || typeof rck !== 'string') return null;
+    const candidates = rckCandidates(rck);
+    if (candidates.length === 0) return null;
+
+    const matches = container.resolve('cacheService').getMatches();
+    // Resolve the ambiguous split by finding the candidate that actually exists.
+    let resolved = null;
+    for (const c of candidates) {
+      const match = matches.find(m => m && m.id === c.matchId);
+      if (!match) continue;
+      const src = (match.sources || []).find(s => s && s.id === c.srcId);
+      if (!src) continue;
+      resolved = { match, src };
+      break;
+    }
+    if (!resolved) return null;
+
+    const { resolveSource } = require('./streams');
+    const minted = await Promise.race([
+      resolveSource(resolved.src, resolved.match, null),
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error('re-mint timeout')), REMINT_TIMEOUT_MS)),
+    ]);
+    if (!Array.isArray(minted) || minted.length === 0) return null;
+
+    // Collect all candidate fresh URLs from minted streams.
+    const freshUrls = [];
+    for (const s of minted) {
+      if (s && typeof s.url === 'string') {
+        if (s.url.includes('/api/manifest?')) {
+          const inner = new URL('http://localhost' + s.url).searchParams.get('url');
+          if (inner) freshUrls.push(inner);
+        } else if (s.url.startsWith('http')) {
+          freshUrls.push(s.url);
+        }
+      }
+    }
+    if (freshUrls.length === 0) return null;
+
+    // Match against currently held URL so we don't swap to an unrelated or broken sub-feed
+    if (heldUrl) {
+      try {
+        const heldParsed = new URL(heldUrl);
+        const heldPath = heldParsed.pathname;
+
+        // Match flavor and stream number (e.g. /prime/.../1/ or /sigma/.../2/)\
+        // WatchFooty pattern: /secure/TOKEN/FLAVOR/SLUG/NUM/EXPIRY/playlist.m3u8
+        const flavorMatch = heldPath.match(/\/(prime|sigma|alpha|delta|live|stream)\/[^/]+\/(\d+)\//i);
+        if (flavorMatch) {
+          const [, flavor, streamNum] = flavorMatch;
+          const matched = freshUrls.find(u => {
+            const up = new URL(u).pathname;
+            return up.includes(`/${flavor}/`) && up.includes(`/${streamNum}/`);
+          });
+          if (matched) return matched;
+
+          // Match by flavor
+          const flavorMatched = freshUrls.find(u => new URL(u).pathname.includes(`/${flavor}/`));
+          if (flavorMatched) return flavorMatched;
+        }
+
+        // Segment overlap heuristic for other providers (e.g. strmd.st, embed.st).
+        // Strips hex tokens and pure numeric segments — this leaves slug words like
+        // the sport category and match-slug, which are stable across re-mints.
+        // We also score by stream-number match (/N/ suffix before filename) so
+        // stream 2 stays on stream 2 rather than slipping to stream 1.
+        const heldSegments = heldPath.split('/').filter(s => s.length > 2 && !/^[0-9a-fA-F_-]{16,}$/.test(s) && !/^\d+$/.test(s));
+        const heldStreamNum = (heldPath.match(/\/(\d+)\/[^/]+$/) || [])[1] || null;
+
+        let bestMatch = null;
+        let maxScore = 0;
+        for (const candidate of freshUrls) {
+          const cPath = new URL(candidate).pathname;
+          let overlap = 0;
+          for (const seg of heldSegments) {
+            if (cPath.includes(seg)) overlap++;
+          }
+          // Bonus: stream number matches (strmd.st /N/ before filename)
+          const candStreamNum = (cPath.match(/\/(\d+)\/[^/]+$/) || [])[1] || null;
+          const numBonus = (heldStreamNum && candStreamNum && heldStreamNum === candStreamNum) ? 0.5 : 0;
+          const score = overlap + numBonus;
+          if (score > maxScore) {
+            maxScore = score;
+            bestMatch = candidate;
+          }
+        }
+        if (bestMatch && maxScore > 0) return bestMatch;
+      } catch (_) {}
+    }
+
+    return freshUrls[0];
+  } catch (e) {
+    console.warn('[ManifestProxy] re-mint failed:', e.message);
+    return null;
   }
 }
 
 app.get('/api/manifest', async (req, res) => {
   const targetUrl = req.query.url;
+  const proxyChunks = req.query.proxyChunks === '1';
   const referer = req.query.referer || 'https://embed.st/';
   const origin = req.query.origin || 'https://embed.st';
 
   if (!targetUrl) return res.status(400).send('Missing url');
 
-  const cacheKey = `${targetUrl}|${referer}|${origin}`;
+  // Detect whether the client is a browser / web client requiring CORS proxying
+  const clientOrigin = req.headers['origin'] || '';
+  const isWebClient = proxyChunks || req.query.web === '1' ||
+                      (clientOrigin && (clientOrigin.includes('stremio') || clientOrigin.includes('localhost') || clientOrigin.includes('http'))) ||
+                      req.headers['sec-fetch-mode'] === 'cors';
+
+  const cacheKey = `${targetUrl}|${referer}|${origin}|${isWebClient ? 'web' : 'native'}`;
+  // Recovery key for this stream, if the URL was emitted by our own resolver.
+  const rck = readRck(req);
+  const rckSuffix = rck ? '&rck=' + encodeURIComponent(rck) : '';
   const entry = manifestCacheGet(cacheKey);
   if (entry && entry.negative) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -343,22 +952,101 @@ app.get('/api/manifest', async (req, res) => {
     let fetchPromise = manifestInFlight.get(cacheKey);
     if (!fetchPromise) {
       fetchPromise = (async () => {
-        const out = await fetchUpstreamManifest(targetUrl, referer, origin);
+        let effectiveUrl = targetUrl;
+        let reminted = false;
+
+        if (rck) {
+          const subKey = getRemintCacheKey(rck, effectiveUrl);
+          const cached = (subKey ? remintCache.get(subKey) : null) || remintCache.get(rck);
+          if (cached && Date.now() < cached.expiresAt) {
+            effectiveUrl = mergeRemintedUrl(effectiveUrl, cached.freshUrl);
+            reminted = true;
+          }
+        }
+
+        let out;
+        try {
+          out = await fetchUpstreamManifest(effectiveUrl, referer, origin);
+        } catch (firstErr) {
+          const fresh = (isExpiryStatus(firstErr) && rck) ? await attemptRemint(rck, effectiveUrl || targetUrl) : null;
+          if (!fresh || fresh === effectiveUrl) throw firstErr;
+          
+          console.log('[ManifestProxy] Upstream token expired — re-minted, retrying transparently');
+          const subKey = getRemintCacheKey(rck, effectiveUrl || targetUrl);
+          if (subKey) remintCache.set(subKey, { freshUrl: fresh, expiresAt: Date.now() + 15 * 60 * 1000 });
+          remintCache.set(rck, { freshUrl: fresh, expiresAt: Date.now() + 15 * 60 * 1000 });
+          
+          // Preserve the variant the player asked for (see mergeRemintedUrl).
+          effectiveUrl = mergeRemintedUrl(targetUrl, fresh);
+          reminted = true;
+          out = await fetchUpstreamManifest(effectiveUrl, referer, origin);
+        }
         if (!out.includes('#EXT')) {
-          console.error('[ManifestProxy] Upstream returned non-m3u8 body for', targetUrl);
+          console.error('[ManifestProxy] Upstream returned non-m3u8 body for', effectiveUrl);
           throw new Error('Upstream returned non-m3u8 body');
         }
 
-        // Rewrite the manifest
+        // Reject header-only playlists (tags but no segment/variant URI). Feeding
+        // one to a player just stalls it; reporting it lets the client fail over.
+        if (!playlistHasContent(out)) {
+          console.warn('[ManifestProxy] Upstream playlist has no media entries (empty live window) for', effectiveUrl);
+          throw new Error('Upstream playlist has no media entries');
+        }
+
+        let dynamicTtl = MANIFEST_TTL_MS;
+        try {
+          const m3u8Parser = require('m3u8-parser');
+          const parser = new m3u8Parser.Parser();
+          parser.push(out);
+          parser.end();
+          if (parser.manifest.targetDuration) {
+            dynamicTtl = (parser.manifest.targetDuration * 1000) / 2;
+          }
+        } catch (e) {
+          // Fallback to default TTL on parse error
+        }
+
+        const isLive = !out.includes('#EXT-X-ENDLIST');
+        const isMaster = out.includes('#EXT-X-STREAM-INF');
+
+        // Master playlists can be cached longer, but live media playlists must refresh dynamically (2-3s)
+        if (isMaster) {
+          dynamicTtl = 60000;
+        } else if (isLive) {
+          dynamicTtl = Math.min(dynamicTtl, 3000);
+        }
+        let injectedStart = out.includes('#EXT-X-START');
+
         const lines = out.split('\n');
         const rewritten = lines.map(line => {
           const l = line.trim();
-          if (!l || l.startsWith('#')) return line;
+
+          let resultLine = line;
+
+          if (!l) return resultLine;
+          
+          if (l.startsWith('#')) {
+              // Handle EXT-X-MAP:URI="relative.mp4"
+              if (l.startsWith('#EXT-X-MAP:')) {
+                  const uriMatch = l.match(/URI="([^"]+)"/);
+                  if (uriMatch) {
+                      try {
+                          const absUri = new URL(uriMatch[1], effectiveUrl).toString();
+                          if (proxyChunks) {
+                              resultLine = l.replace(uriMatch[1], `/api/hlschunk?url=${encodeURIComponent(absUri)}`);
+                          } else {
+                              resultLine = l.replace(uriMatch[1], absUri);
+                          }
+                      } catch(e) {}
+                  }
+              }
+              return resultLine;
+          }
 
           let absoluteUrl = l;
           try {
-            const chunkUrl = new URL(l, targetUrl);
-            const manifestUrl = new URL(targetUrl);
+            const chunkUrl = new URL(l, effectiveUrl);
+            const manifestUrl = new URL(effectiveUrl);
 
             manifestUrl.searchParams.forEach((val, key) => {
               if (!chunkUrl.searchParams.has(key)) {
@@ -371,30 +1059,37 @@ app.get('/api/manifest', async (req, res) => {
           }
 
           if (absoluteUrl.includes('.m3u8')) {
-            return `/api/manifest?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}`;
+            const webSuffix = isWebClient ? '&web=1' : '';
+            return `/api/manifest?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}${proxyChunks ? '&proxyChunks=1' : ''}${webSuffix}${rckSuffix}`;
           }
 
-          if (RELAY_SEGMENTS) {
-            return `/api/segment?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}`;
+          // Cloaked segments must be proxied ONLY when the client needs it:
+          // 1. .image (Streamed.pk / TikTok CDN) genuinely contains a 42-byte WebP/RIFF header and needs unwrapping to MPEG-TS
+          // 2. Web clients (browser) where CORS forbids direct fetching from storage buckets without Access-Control-Allow-Origin
+          // 3. proxyChunks explicitly requested
+          //
+          // Pure MPEG-TS disguised as .png/.webp (WatchFooty / Alibaba / R2 / Tencent) has NO header wrapper (starts with 0x47 byte 0).
+          // Native players (Android, FireStick, Desktop, iOS) do not enforce browser CORS and can fetch directly from CDN without server double-hop.
+          const needsUnwrapping = absoluteUrl.includes('.image');
+          const isPureDisguisedTs = absoluteUrl.includes('.png') || absoluteUrl.includes('.webp') || absoluteUrl.includes('.js');
+
+          if (proxyChunks || needsUnwrapping || (isWebClient && isPureDisguisedTs)) {
+            let chunkUrl = `/api/hlschunk?url=${encodeURIComponent(absoluteUrl)}`;
+            if (referer) chunkUrl += `&referer=${encodeURIComponent(referer)}`;
+            return chunkUrl;
           }
-          if ((absoluteUrl.includes('.image') || absoluteUrl.includes('.js')) && !absoluteUrl.includes('.ts') && !absoluteUrl.includes('.m3u8')) {
-            absoluteUrl += '#.ts';
+
+          // For native clients playing pure MPEG-TS with disguised extension, append '#.ts'
+          // so any naive media parser knows it's transport stream without altering HTTP fetch
+          if (isPureDisguisedTs && !absoluteUrl.includes('.ts')) {
+            return absoluteUrl + '#.ts';
           }
+
           return absoluteUrl;
-        }).map(line => {
-          // Encryption keys must be fetched with the same headers as segments.
-          if (RELAY_SEGMENTS && line.startsWith('#EXT-X-KEY') && line.includes('URI="')) {
-            return line.replace(/URI="([^"]+)"/, (_, u) => {
-              let abs = u;
-              try { abs = new URL(u, targetUrl).toString(); } catch (_) {}
-              return `URI="/api/segment?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(referer)}&origin=${encodeURIComponent(origin)}"`;
-            });
-          }
-          return line;
         });
 
         const rewrittenResult = rewritten.join('\n');
-        manifestCacheSet(cacheKey, rewrittenResult);
+        manifestCacheSet(cacheKey, rewrittenResult, dynamicTtl);
         return rewrittenResult;
       })().finally(() => {
         manifestInFlight.delete(cacheKey);
@@ -410,49 +1105,35 @@ app.get('/api/manifest', async (req, res) => {
   } catch (err) {
     // Preserve the old 404 semantics so players can fail over to another stream.
     // Failures are negatively cached (15 s) so player polls stop hammering the dead upstream.
-    if (err.message === 'Upstream returned non-m3u8 body') {
+    // In parallel, drop the originating resolve-cache entry so the next click mints fresh.
+    notifyResolveCacheOfDeadStream(req.originalUrl || req.url);
+    // Auth/expiry statuses from the CDN mean the embedded upstream token is gone,
+    // not that this proxy is broken. Providers were observed to answer expired
+    // tokens with 403 (see streams.js verifyStreams). Reporting those as 404 lets
+    // the player fail over cleanly instead of hard-erroring on a misleading 502.
+    const upstreamStatus = err && err.statusCode;
+    const isExpired = upstreamStatus === 401 || upstreamStatus === 403 ||
+                      upstreamStatus === 404 || upstreamStatus === 410;
+    // A transient upland 5xx that survived the retry above is NOT a broken proxy —
+    // the upstream is just briefly unavailable. Reporting 404 lets the player fail
+    // over to another stream instead of stalling on a 502.
+    const isTransientUpstream = upstreamStatus >= 500 && upstreamStatus <= 599;
+    if (err.message === 'Upstream returned non-m3u8 body' ||
+        err.message === 'Upstream playlist has no media entries' ||
+        isExpired || isTransientUpstream) {
+      if (isExpired) {
+        console.warn(`[ManifestProxy] Upstream refused with ${upstreamStatus} (expired token?) for ${targetUrl}`);
+      } else if (isTransientUpstream) {
+        console.warn(`[ManifestProxy] Upstream ${upstreamStatus} persisted after retry; reporting 404 so the player fails over`);
+      }
+      // Negative-cache briefly so the player's rapid polls don't hammer a dead
+      // upstream, but short enough that a recovered upstream is picked up quickly.
       manifestCacheSetNegative(cacheKey, 404, 'Stream not found or expired');
       return res.status(404).send('Stream not found or expired');
     }
     console.error('[ManifestProxy] Error:', err.message);
     manifestCacheSetNegative(cacheKey, 502, 'Manifest proxy error: ' + err.message);
     return res.status(502).send('Manifest proxy error: ' + err.message);
-  }
-});
-
-// ─── /api/hls — stable, self-healing HLS gateway (see services/HlsGateway) ────
-const hlsGateway = container.resolve('hlsGateway');
-app.get('/api/hls/:key/index.m3u8', (req, res) => hlsGateway.serveIndex(req, res));
-app.get('/api/hls/:key/sub.m3u8', (req, res) => hlsGateway.serveSub(req, res));
-app.get('/api/hls/:key/seg', (req, res) => hlsGateway.serveSegment(req, res));
-
-// ─── /api/segment — media segment relay (only used when RELAY_SEGMENTS=true) ──
-let segmentDispatcher = null;
-app.get('/api/segment', async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl || !/^https?:\/\//.test(targetUrl)) return res.status(400).send('Missing url');
-  const referer = req.query.referer || '';
-  const origin = req.query.origin || '';
-  const headers = { 'User-Agent': PROXY_EMBED_UA, 'Accept': '*/*' };
-  if (referer) headers['Referer'] = referer;
-  if (origin) headers['Origin'] = origin;
-  if (req.headers.range) headers['Range'] = req.headers.range;
-  try {
-    const { request, Agent } = require('undici');
-    if (!segmentDispatcher) segmentDispatcher = new Agent({ connect: { rejectUnauthorized: false }, keepAliveTimeout: 15000, pipelining: 1 });
-    const upstream = await request(targetUrl, { headers, dispatcher: segmentDispatcher, headersTimeout: 10000, bodyTimeout: 20000 });
-    res.status(upstream.statusCode);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'no-store');
-    const ct = upstream.headers['content-type'];
-    res.setHeader('Content-Type', ct && !String(ct).includes('text/html') ? ct : 'video/mp2t');
-    if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
-    if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
-    upstream.body.on('error', () => { try { res.destroy(); } catch (_) {} });
-    req.on('close', () => { try { upstream.body.destroy(); } catch (_) {} });
-    upstream.body.pipe(res);
-  } catch (err) {
-    if (!res.headersSent) res.status(502).send('Segment relay error: ' + err.message);
   }
 });
 
@@ -477,6 +1158,8 @@ const ALLOWED_EMBED_DOMAINS = new Set([
   'viprow.me',
   'vipbox.lc',
 ]);
+
+const PROXY_EMBED_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
 app.get('/api/proxy-embed', async (req, res) => {
   const rawUrl = req.query.url;
@@ -558,8 +1241,13 @@ app.use((req, res, next) => {
   const originalEnd = res.end;
   const chunks = [];
 
-  res.write = function (chunk) {
-    if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  res.write = function (chunk, encoding, callback) {
+    if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof encoding === 'string' ? encoding : undefined));
+    // Honour the Node write contract: invoke a trailing callback and return a
+    // boolean so callers that check backpressure are not misled.
+    if (typeof encoding === 'function') encoding();
+    else if (typeof callback === 'function') callback();
+    return true;
   };
 
   res.end = function (chunk, encoding, callback) {
@@ -576,12 +1264,12 @@ app.use((req, res, next) => {
         const rewriteUrl = (url) => {
           if (!url || typeof url !== 'string') return url;
           // Relative URLs
-          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/api/hls') || url.startsWith('/logo')) {
+          if (url.startsWith('/img') || url.startsWith('/watch') || url.startsWith('/api/manifest') || url.startsWith('/logo') || url.startsWith('/api/mp4proxy') || url.startsWith('/api/fastmp4') || url.startsWith('/api/hlschunk')) {
             modified = true;
             return `${currentBaseUrl}${url}`;
           }
           // Absolute URLs with legacy/static base or localhost/LAN IP
-          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|api\/hls|logo)(?:[?\/].*)?)$/);
+          const match = url.match(/^(?:https?:\/\/[^\/]+)(\/(?:img|watch|api\/manifest|api\/mp4proxy|api\/fastmp4|api\/hlschunk|logo)(?:[?\/].*)?)$/);
           if (match) {
             modified = true;
             return `${currentBaseUrl}${match[1]}`;
@@ -674,7 +1362,7 @@ app.get('/:config?/manifest.json', (req, res, next) => {
     const enabledSports = parsedConfig.sports.split(',');
     
     // General catalogs to always keep
-    const keepCatalogs = ['nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_teams'];
+    const keepCatalogs = ['nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_teams', 'nuvio_sports_networks'];
     
     // Add specific catalogs based on selection
     const sportCatalogs = ['football', 'cricket', 'basketball', 'motorsport', 'hockey', 'baseball', 'mma', 'golf', 'tennis', 'rugby', 'american_football', 'darts'];
@@ -689,6 +1377,36 @@ app.get('/:config?/manifest.json', (req, res, next) => {
   // Remove teams catalog if the user hasn't configured any teams
   if (typeof parsedConfig.teams !== 'string' || parsedConfig.teams.trim() === '') {
     newManifest.catalogs = newManifest.catalogs.filter(c => c.id !== 'nuvio_sports_teams');
+  }
+
+  // Catalog management: hide sport catalogs that currently have no content.
+  // Dead shelves (a catalog chip that always opens empty) are worse UX than an
+  // absent one. Guarded so this only applies once a sync has actually produced
+  // matches — on a cold start the cache is empty and hiding everything would be
+  // far worse than showing a temporary empty shelf.
+  try {
+    const cached = container.resolve('cacheService').getMatches();
+    if (Array.isArray(cached) && cached.length > 0) {
+      const present = new Set(cached.map(m => m && m.category).filter(Boolean));
+      // Always-keep catalogs: not tied to a single sport.
+      const ALWAYS_KEEP = new Set([
+        'nuvio_sports_live', 'nuvio_sports_upcoming', 'nuvio_sports_replays',
+        'nuvio_sports_teams', 'nuvio_sports_other', 'nuvio_sports_networks'
+      ]);
+      newManifest.catalogs = newManifest.catalogs.filter((c) => {
+        if (ALWAYS_KEEP.has(c.id)) return true;
+        const cat = c.id.replace('nuvio_sports_', '');
+        // Keep 24/7 network-carried sports even when no fixture is scheduled.
+        if (present.has(cat)) return true;
+        if (cached.some(m => m && m.category === 'networks')) {
+          const titleLower = (m => String((m && m.title) || '').toLowerCase());
+          if (cached.some(m => m && m.category === 'networks' && titleLower(m).includes(cat))) return true;
+        }
+        return false;
+      });
+    }
+  } catch (_) {
+    // Never let catalog curation break the manifest.
   }
 
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -794,7 +1512,7 @@ app.get('/watch', (req, res) => {
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
     @keyframes fadeOut { to { opacity: 0; pointer-events: none; } }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
   <div id="topbar"><span class="dot"></span><span>${safeTitle}</span></div>
@@ -1005,14 +1723,26 @@ app.get('/watch', (req, res) => {
     #loader .match { font-size: 18px; font-weight: 600; text-align: center; padding: 0 24px; }
     #loader .hint  { font-size: 13px; opacity: 0.5; }
     
+    #p2p-status {
+      position: fixed; bottom: 20px; right: 20px; background: rgba(0,0,0,0.7); color: #0f0;
+      padding: 5px 10px; border-radius: 4px; font-size: 12px; font-family: monospace; z-index: 20;
+      display: none;
+    }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p2p-media-loader-core@latest/build/p2p-media-loader-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p2p-media-loader-hlsjs@latest/build/p2p-media-loader-hlsjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
   <div id="loader">
     <div class="spinner"></div>
     <p class="match">\uD83D\uDD34 ${safeTitle}</p>
     <p class="hint">Loading stream\u2026</p>
+    <a id="embed-fallback" href="${safeUrl}" target="_blank" rel="noopener noreferrer"
+       style="display:none; margin-top:16px; padding:10px 22px; background:#f44; color:#fff;
+              border-radius:8px; font-size:14px; font-weight:600; text-decoration:none;">
+      Stream did not start \u2014 open in browser
+    </a>
   </div>
 
   <div id="topbar">
@@ -1023,6 +1753,8 @@ app.get('/watch', (req, res) => {
   <button id="fs-btn" tabindex="0" title="Toggle Fullscreen (or Press OK on Remote)">
     <span>\u26F6 Fullscreen</span>
   </button>
+
+  <div id="p2p-status">P2P Active: 0 Peers</div>
 
   <iframe
     id="player"
@@ -1072,43 +1804,108 @@ app.get('/watch', (req, res) => {
     const loader = document.getElementById('loader');
     const iframe = document.getElementById('player');
     const video = document.getElementById('video-player');
+    const p2pStatus = document.getElementById('p2p-status');
     const targetUrl = "${safeUrl}";
     const isM3u8 = targetUrl.includes('.m3u8');
+    
+    // Video streams play DIRECT from the upstream CDN (no server-side relay).
+    let finalUrl = targetUrl;
+
+    // >>> TV-SAFE PLAYBACK: graceful degradation
+    // TV WebViews vary widely: many block WebRTC (so P2P construction throws),
+    // lack Web Workers, or block the cross-origin CDN scripts. Previously ANY
+    // throw during P2P setup aborted this whole script, leaving a permanent
+    // spinner - reported as a "sandbox error" on TV. Each capability is now
+    // feature-detected, and every failure falls through to the next strategy.
+    function showFatal(msg) {
+      loader.classList.remove('hidden');
+      var hint = loader.querySelector('.hint');
+      if (hint) hint.textContent = msg;
+      var fb = document.getElementById('embed-fallback');
+      if (fb) fb.style.display = 'inline-block';
+    }
+
+    function startHls(opts) {
+      var hls = new Hls(opts);
+      hls.on(Hls.Events.MANIFEST_PARSED, function () {
+        loader.classList.add('hidden');
+        var p = video.play();
+        if (p && p.catch) p.catch(function () {});
+      });
+      hls.on(Hls.Events.ERROR, function (evt, data) {
+        if (data && data.fatal) {
+          console.warn('[player] fatal HLS error:', data.type, data.details);
+          showFatal('Playback error: ' + (data.details || data.type));
+        }
+      });
+      hls.loadSource(finalUrl);
+      hls.attachMedia(video);
+      return hls;
+    }
 
     if (isM3u8) {
       iframe.style.display = 'none';
       video.style.display = 'block';
-      const onFail = () => { loader.querySelector('.hint').textContent = 'Stream failed to load. Try another source.'; };
+      var started = false;
 
-      if (Hls.isSupported()) {
-        let hls = null, restarts = 0;
-        const start = () => {
-          if (hls) { try { hls.destroy(); } catch (_) {} }
-          hls = new Hls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 8, lowLatencyMode: true, enableWorker: true,
-            manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6, fragLoadingRetryDelay: 1000 });
-          hls.loadSource(targetUrl);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); loader.classList.add('hidden'); });
-          hls.on(Hls.Events.ERROR, (_, d) => {
-            if (!d || !d.fatal) return;
-            if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
-            if (restarts++ < 8) { loader.classList.remove('hidden'); loader.querySelector('.hint').textContent = 'Reconnecting…'; setTimeout(start, 1500 + restarts * 500); }
-            else onFail();
-          });
-        };
-        start();
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = targetUrl;
-        video.addEventListener('loadedmetadata', () => { video.play().catch(() => {}); loader.classList.add('hidden'); });
-        video.addEventListener('error', onFail);
-      } else {
-        onFail();
+      // 1) P2P via WebRTC - optional, and the most likely to be blocked on TV.
+      try {
+        if (window.p2pml && p2pml.hlsjs && p2pml.hlsjs.Engine && p2pml.hlsjs.Engine.isSupported()) {
+          p2pStatus.style.display = 'block';
+          var engine = new p2pml.hlsjs.Engine();
+          engine.on('peer_connect', function () { p2pStatus.innerText = 'P2P Active'; });
+          // enableWorker disabled: TV engines frequently lack Worker support.
+          startHls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 5,
+                     lowLatencyMode: true, enableWorker: false,
+                     loader: engine.createLoaderClass() });
+          started = true;
+        }
+      } catch (e) {
+        console.warn('[player] P2P unavailable, continuing without it:', e && e.message);
+        p2pStatus.style.display = 'none';
       }
+
+      // 2) Plain hls.js, worker disabled for maximum TV compatibility.
+      if (!started && window.Hls && Hls.isSupported()) {
+        try {
+          startHls({ liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 5,
+                     lowLatencyMode: true, enableWorker: false });
+          started = true;
+        } catch (e) {
+          console.warn('[player] hls.js failed:', e && e.message);
+        }
+      }
+
+      // 3) Native HLS (Safari/iOS and some TV engines).
+      if (!started && video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = finalUrl;
+        video.addEventListener('loadedmetadata', function () {
+          loader.classList.add('hidden');
+          var p = video.play();
+          if (p && p.catch) p.catch(function () {});
+        });
+        video.addEventListener('error', function () { showFatal('Native playback failed'); });
+        started = true;
+      }
+
+      if (!started) showFatal('No compatible video player on this device');
     } else {
       video.style.display = 'none';
+      let iframeLoaded = false;
       iframe.src = targetUrl;
-      iframe.addEventListener('load', () => loader.classList.add('hidden'));
-      setTimeout(() => loader.classList.add('hidden'), 6000);
+      iframe.addEventListener('load', () => {
+        iframeLoaded = true;
+        loader.classList.add('hidden');
+      });
+      // A blocked, hung or black-holed embed may never fire its load event at all.
+      // Rather than freezing on an eternal spinner, reveal a manual escape hatch
+      // so the user always has a way to reach the stream.
+      setTimeout(() => {
+        if (iframeLoaded) return;
+        loader.classList.add('hidden');
+        const fallback = document.getElementById('embed-fallback');
+        if (fallback) fallback.style.display = 'inline-block';
+      }, 12000);
     }
   </script>
 </body>
@@ -1121,7 +1918,22 @@ app.get('/watch', (req, res) => {
 app.get('/health', (_, res) => {
   let cache = null;
   try { cache = container.resolve('streamResolveCache').stats(); } catch (_) {}
-  res.json({ status: 'ok', service: 'nuvio-live-sports', streamResolveCache: cache });
+  // Surface tripped circuit breakers: a provider can look "down" for minutes
+  // while its upstream is healthy, and this is the only way to tell.
+  let breakers = null;
+  let openBreakers = [];
+  try {
+    const cb = container.resolve('circuitBreaker');
+    if (cb && cb.getStatus) breakers = cb.getStatus();
+    if (cb && cb.getOpenBreakers) openBreakers = cb.getOpenBreakers();
+  } catch (_) {}
+  res.json({
+    status: 'ok',
+    service: 'nuvio-live-sports',
+    openBreakers,
+    breakerCount: breakers ? Object.keys(breakers).length : null,
+    streamResolveCache: cache
+  });
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────

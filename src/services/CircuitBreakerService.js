@@ -18,8 +18,13 @@ class CircuitBreakerService {
     const options = {
       timeout: 20000, // If function takes longer than 20 seconds, trigger a failure
       errorThresholdPercentage: 50, // When 50% of requests fail, trip the circuit
-      resetTimeout: 5 * 60 * 1000, // After 5 minutes, try again
-      volumeThreshold: 3 // Wait for at least 3 failures before tripping
+      // Was 5 minutes. That made a short upstream wobble blackout a provider for
+      // the full window even after it recovered (reproduced: 3 failures -> 0 real
+      // calls attempted for 5 min). Still protective, far less user-hostile.
+      resetTimeout: 90 * 1000, // After 90s, try again
+      // Was 3. With only 3 samples required, two transient 5xx replies in a burst
+      // were enough to trip. Requiring more evidence avoids spurious blackouts.
+      volumeThreshold: 5 // Wait for at least 5 failures before tripping
     };
 
     const breaker = new CircuitBreaker(asyncFunction, options);
@@ -36,6 +41,37 @@ class CircuitBreakerService {
 
     this.breakers.set(name, breaker);
     return breaker;
+  }
+
+  /**
+   * Snapshot of every breaker's state, for /health and diagnostics.
+   * A tripped breaker is the single most confusing failure mode in this addon:
+   * the provider looks "down" for minutes while the upstream is actually fine.
+   * Exposing it lets an operator tell that apart from a real outage instantly.
+   */
+  getStatus() {
+    const out = {};
+    for (const [name, breaker] of this.breakers) {
+      let state = 'closed';
+      if (breaker.opened) state = 'open';
+      else if (breaker.halfOpen) state = 'halfOpen';
+      out[name] = {
+        state,
+        failures: breaker.stats ? breaker.stats.failures : undefined,
+        successes: breaker.stats ? breaker.stats.successes : undefined,
+        fallbacks: breaker.stats ? breaker.stats.fallbacks : undefined
+      };
+    }
+    return out;
+  }
+
+  /** Names of currently tripped breakers (empty when everything is healthy). */
+  getOpenBreakers() {
+    const open = [];
+    for (const [name, breaker] of this.breakers) {
+      if (breaker.opened) open.push(name);
+    }
+    return open;
   }
 }
 

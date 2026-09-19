@@ -1,12 +1,12 @@
 {
   "name": "nuvio-live-sports-plugin",
-  "version": "3.1.0",
+  "version": "3.0.0",
   "description": "The ultimate live sports streaming add-on for Nuvio/Stremio. Scrapes multiple high-speed providers with a zero-lag proxy.",
   "main": "src/index.js",
   "scripts": {
     "start": "node dist/index.js",
     "dev": "node --watch-path=src src/index.js",
-    "build": "npx @vercel/ncc build src/index.js -o dist --minify && npx -y copyfiles -f \"src/providers/*.wasm\" \"src/providers/*.js\" dist",
+    "build": "npx @vercel/ncc build src/index.js -o dist --minify && npx -y copyfiles -f \"src/providers/*.wasm\" \"src/providers/*.js\" dist && npx -y copyfiles -u 2 \"resolver/src/**/*\" dist/src && node -e \"require('fs').writeFileSync('dist/src/package.json', JSON.stringify({type:'module'},null,2))\"",
     "test": "jest",
     "test:e2e-client": "node scripts/test-e2e-simulated-client.js",
     "test:sanity": "node scripts/test-e2e-simulated-client.js",
@@ -32,6 +32,7 @@
     "jsdom": "^29.1.1",
     "lz-string": "^1.5.0",
     "m3u8-parser": "^7.2.0",
+    "megajs": "^1.3.10",
     "nock": "^14.0.16",
     "node-cron": "^4.6.0",
     "opossum": "^10.0.0",
@@ -49,6 +50,12 @@
     "sports-streaming"
   ],
   "license": "MIT",
+  "jest": {
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/nuvio-proxy-2/"
+    ]
+  },
   "overrides": {
     "glob": "^11.0.0",
     "inflight": "^1.0.6"
